@@ -10,6 +10,10 @@ import { deductionCents, type TheirShare } from '../people/own-share.js';
  * as a refund, or a transfer, is not spending) and of its category; the "General" budget takes every category.
  * `periodWhere` is the period filter (see monthOrRangeWhere): the planning month, or a date range.
  *
+ * A refund (INCOME row with `isRefund`) cancels an expense, so it is not income: it counts in the budgets and in the
+ * dashboard as a negative expense of its own category, and a category may be negative in a month (the refund of a
+ * purchase of an earlier month). An income budget never takes a refund.
+ *
  * The payment of a card invoice (tagged `invoice_pay:<card>:...` in `attachmentUrl`) is left out: the purchases of the
  * card already count on their own dates, so the payment would count the same money twice.
  */
@@ -22,18 +26,45 @@ export function budgetSpendingWhere(
 ): Prisma.TransactionWhereInput {
   const { AND: periodAnd, ...period } = periodWhere as { AND?: unknown };
   const periodConditions = periodAnd === undefined ? [] : Array.isArray(periodAnd) ? periodAnd : [periodAnd];
+  const isExpense = budget.type === CategoryType.EXPENSE;
+  // An expense budget takes the expenses and the refunds; an income budget takes the income that is not a refund
+  const typeConditions = isExpense
+    ? [{ OR: [{ type: CategoryType.EXPENSE }, { type: CategoryType.INCOME, isRefund: true }] }]
+    : [{ type: budget.type as CategoryType }, { NOT: { isRefund: true } }];
   return {
     householdId: budget.householdId,
     ...(budget.categoryName === GENERAL_BUDGET_CATEGORY ? {} : { categoryName: budget.categoryName }),
-    type: budget.type as CategoryType,
     ...period,
-    AND: [...periodConditions, NOT_INVOICE_PAYMENT],
+    AND: [...periodConditions, ...typeConditions, NOT_INVOICE_PAYMENT],
   } as Prisma.TransactionWhereInput;
 }
 
-/** Sum of the absolute amounts, in reais, added in whole cents. */
-export function sumSpending(rows: ReadonlyArray<{ amount: { toNumber(): number } }>): number {
-  return rows.reduce((cents, row) => cents + Math.round(Math.abs(row.amount.toNumber()) * 100), 0) / 100;
+/** A row that cancels an expense: income marked as a refund. */
+export function isRefundRow(row: { type: string; isRefund?: boolean | null }): boolean {
+  return row.type === 'INCOME' && row.isRefund === true;
+}
+
+type AmountRow = { type: string; isRefund?: boolean | null; amount: { toNumber(): number } | number };
+const amountOf = (row: AmountRow): number => (typeof row.amount === 'number' ? row.amount : row.amount.toNumber());
+
+/** What a row adds to the expense of the month, in reais: its amount for an expense, minus it for a refund, else 0. */
+export function expenseDelta(row: AmountRow): number {
+  if (row.type === 'EXPENSE') return Math.abs(amountOf(row));
+  return isRefundRow(row) ? -Math.abs(amountOf(row)) : 0;
+}
+
+/** What a row adds to the income of the month, in reais: income that is not a refund. */
+export function incomeDelta(row: AmountRow): number {
+  if (row.type !== 'INCOME' || row.isRefund === true) return 0;
+  return amountOf(row);
+}
+
+/** Sum of the amounts, in reais, added in whole cents: the absolute value of each row, minus it for a refund. */
+export function sumSpending(rows: ReadonlyArray<{ amount: { toNumber(): number }; isRefund?: boolean | null }>): number {
+  return rows.reduce((cents, row) => {
+    const abs = Math.round(Math.abs(row.amount.toNumber()) * 100);
+    return row.isRefund === true ? cents - abs : cents + abs;
+  }, 0) / 100;
 }
 
 /** How a budget is measured: the full spending (a budget kept together) or the own share (kept separately). */

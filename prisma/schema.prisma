@@ -374,6 +374,9 @@ model Transaction {
   // deposited on 25 Sep that pays October). Null = the month of `date`. Balances, calendar, invoices and bank
   // reconciliation keep using `date`; month planning (lists by month, summaries, budgets) uses COALESCE(competence_month, month of date).
   competenceMonth        String?         @map("competence_month") @db.VarChar(7)
+  // A refund (estorno): an INCOME row that cancels an expense. It is not income: the dashboard and the budgets take it
+  // off the spending of its category (budget-spending.ts). Only INCOME rows carry it; the balance of the account is untouched.
+  isRefund               Boolean         @default(false) @map("is_refund")
   createdAt              DateTime        @default(now()) @map("created_at")
   updatedAt              DateTime        @updatedAt @map("updated_at")
 

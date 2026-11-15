@@ -128,14 +128,19 @@ describe('budget spending: the alert and the screen use one definition', () => {
   it('the General budget takes every category of its type; a category budget only its own', () => {
     const period = { AND: [] };
     const notPayment = { OR: [{ attachmentUrl: null }, { NOT: { attachmentUrl: { startsWith: 'invoice_pay:' } } }] };
-    expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GENERAL', type: 'EXPENSE' }, period)).toEqual({ householdId: HH, type: 'EXPENSE', AND: [notPayment] });
-    expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GROCERIES', type: 'INCOME' }, period)).toEqual({ householdId: HH, categoryName: 'GROCERIES', type: 'INCOME', AND: [notPayment] });
+    // an expense budget takes expenses and refunds (income marked isRefund); an income budget takes income that is not a refund
+    const expenseOrRefund = { OR: [{ type: 'EXPENSE' }, { type: 'INCOME', isRefund: true }] };
+    const incomeNotRefund = [{ type: 'INCOME' }, { NOT: { isRefund: true } }];
+    expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GENERAL', type: 'EXPENSE' }, period)).toEqual({ householdId: HH, AND: [expenseOrRefund, notPayment] });
+    expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GROCERIES', type: 'INCOME' }, period)).toEqual({ householdId: HH, categoryName: 'GROCERIES', AND: [...incomeNotRefund, notPayment] });
     // the period filter is kept: its conditions and the exclusion are both under AND
     const month = { AND: [{ OR: [{ competenceMonth: '2026-10' }] }] };
-    expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GENERAL', type: 'EXPENSE' }, month).AND).toEqual([{ OR: [{ competenceMonth: '2026-10' }] }, notPayment]);
+    expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GENERAL', type: 'EXPENSE' }, month).AND).toEqual([{ OR: [{ competenceMonth: '2026-10' }] }, expenseOrRefund, notPayment]);
     const range = { date: { gte: new Date('2026-10-01'), lte: new Date('2026-10-31') } };
-    expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GENERAL', type: 'EXPENSE' }, range)).toMatchObject({ date: range.date, AND: [notPayment] });
+    expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GENERAL', type: 'EXPENSE' }, range)).toMatchObject({ date: range.date, AND: [expenseOrRefund, notPayment] });
     expect(sumSpending([{ amount: dec(-0.1) }, { amount: dec(0.2) }])).toBe(0.3);
+    // a refund comes off the sum
+    expect(sumSpending([{ amount: dec(-100) }, { amount: dec(30), isRefund: true }])).toBe(70);
   });
 
   it('guard: neither side builds its own filter or sum, both go through budget-spending', () => {

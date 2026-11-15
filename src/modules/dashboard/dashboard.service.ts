@@ -6,7 +6,7 @@ import { forecastBatch } from '../recurring-transactions/recurring-forecast.js';
 import { TransactionType, CategoryType, GENERAL_BUDGET_CATEGORY, getCategoriesByType, getCategoryColor, CATEGORY_NAME_DISPLAY } from '../../shared/enums/index.js';
 import { isCustomCategoryName, toCustomCategoryName } from '../../shared/utils/categoryHelpers.js';
 import { budgetStatusOf } from '../budgets/budget-status.js';
-import { NOT_INVOICE_PAYMENT } from '../budgets/budget-spending.js';
+import { NOT_INVOICE_PAYMENT, expenseDelta, incomeDelta, isRefundRow } from '../budgets/budget-spending.js';
 import type {
   DashboardOverviewQuery,
   DashboardOverviewResponse,
@@ -154,6 +154,7 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
 function calculateSummary(
   transactions: Array<{
     type: string;
+    isRefund?: boolean | null;
     amount: { toNumber: () => number } | number;
     accountId: string | null;
     account: { type: string } | null;
@@ -168,13 +169,9 @@ function calculateSummary(
       continue;
     }
 
-    const amount = typeof t.amount === 'number' ? t.amount : t.amount.toNumber();
-
-    if (t.type === TransactionType.INCOME) {
-      totalIncome += amount;
-    } else if (t.type === TransactionType.EXPENSE) {
-      totalExpense += Math.abs(amount);
-    }
+    // A refund is not income: it takes its amount off the expense (see budget-spending.ts)
+    totalIncome += incomeDelta(t);
+    totalExpense += expenseDelta(t);
   }
 
   return {
@@ -283,7 +280,8 @@ function getMonthlyMultiplier(frequency?: string): number {
 }
 
 /** The own share of one expense transaction (|amount| minus what people owe the user on it, floor zero), in reais. */
-function ownExpenseOf(t: { id?: string }, amount: number, theirShares: ReadonlyMap<string, TheirShare>): number {
+function ownExpenseOf(t: { id?: string; type?: string; isRefund?: boolean | null }, amount: number, theirShares: ReadonlyMap<string, TheirShare>): number {
+  if (isRefundRow({ type: t.type ?? '', isRefund: t.isRefund })) return -Math.abs(amount);
   const share = t.id ? theirShares.get(t.id) : undefined;
   if (!share) return Math.abs(amount);
   return ownAmountCents(Math.round(Math.abs(amount) * 100), share.theirCents) / 100;
@@ -295,6 +293,7 @@ function ownExpenseOf(t: { id?: string }, amount: number, theirShares: ReadonlyM
 function calculateCategoryBreakdown(
   transactions: Array<{
     type: string;
+    isRefund?: boolean | null;
     amount: { toNumber: () => number } | number;
     categoryName: string | null;
     accountId: string | null;
@@ -316,10 +315,9 @@ function calculateCategoryBreakdown(
     }
 
     const cat = categoryMap.get(t.categoryName)!;
-    if (t.type === TransactionType.INCOME) {
-      cat.income += amount;
-    } else if (t.type === TransactionType.EXPENSE) {
-      cat.expense += Math.abs(amount);
+    cat.income += incomeDelta(t);
+    if (t.type === TransactionType.EXPENSE || isRefundRow(t)) {
+      cat.expense += expenseDelta(t);
       cat.ownExpense += ownExpenseOf(t, amount, theirShares);
     }
   }
@@ -354,7 +352,7 @@ async function getMonthlyAggregates(
       householdId,
       AND: [effectiveMonthRangeWhere(monthList[0]!, currentMonth), NOT_INVOICE_PAYMENT],
     },
-    select: { type: true, amount: true, date: true, competenceMonth: true },
+    select: { type: true, amount: true, isRefund: true, date: true, competenceMonth: true },
   });
 
   const byMonth = new Map(monthList.map((m) => [m, { month: m, income: 0, expense: 0 }]));
@@ -363,12 +361,8 @@ async function getMonthlyAggregates(
     const bucket = byMonth.get(effectiveMonth(t));
     if (!bucket) continue;
 
-    const amount = t.amount.toNumber();
-    if (t.type === TransactionType.INCOME) {
-      bucket.income += amount;
-    } else if (t.type === TransactionType.EXPENSE) {
-      bucket.expense += Math.abs(amount);
-    }
+    bucket.income += incomeDelta(t);
+    bucket.expense += expenseDelta(t);
   }
 
   return monthList.map((m) => byMonth.get(m)!);
@@ -463,6 +457,7 @@ function calculateBudgetVsRealized(
   }>,
   transactions: Array<{
     type: string;
+    isRefund?: boolean | null;
     amount: { toNumber: () => number } | number;
     categoryName: string | null;
     accountId: string | null;
@@ -484,8 +479,9 @@ function calculateBudgetVsRealized(
 
     const amount = Math.abs(typeof t.amount === 'number' ? t.amount : t.amount.toNumber());
 
-    if (t.type === TransactionType.EXPENSE) {
-      categorySpending.set(t.categoryName, (categorySpending.get(t.categoryName) || 0) + amount);
+    // A refund lowers the spending of its category (negative expense) and is never income
+    if (t.type === TransactionType.EXPENSE || isRefundRow(t)) {
+      categorySpending.set(t.categoryName, (categorySpending.get(t.categoryName) || 0) + expenseDelta(t));
       const own = ownExpenseOf(t, amount, theirShares);
       categoryOwnSpending.set(t.categoryName, (categoryOwnSpending.get(t.categoryName) || 0) + own);
     } else if (t.type === TransactionType.INCOME) {
@@ -498,7 +494,7 @@ function calculateBudgetVsRealized(
   } else {
     // Same set as calculateSummary (the General budget counts every expense, with or without category)
     for (const t of transactions) {
-      if (t.type !== TransactionType.EXPENSE) continue;
+      if (t.type !== TransactionType.EXPENSE && !isRefundRow(t)) continue;
       ownTotalExpense += ownExpenseOf(t, typeof t.amount === 'number' ? t.amount : t.amount.toNumber(), theirShares);
     }
   }
@@ -551,14 +547,15 @@ function calculateBudgetVsRealized(
  */
 function buildHeatmap(
   month: string,
-  transactions: ReadonlyArray<{ type: string; amount: { toNumber(): number }; date: Date }>,
+  transactions: ReadonlyArray<{ type: string; isRefund?: boolean | null; amount: { toNumber(): number }; date: Date }>,
 ): { month: string; data: DashboardHeatmapDay[]; total: number; daysInMonth: number } {
   const daysInMonth = parseMonthFilter(month).end.getUTCDate();
   const cents = new Array<number>(daysInMonth + 1).fill(0);
   for (const t of transactions) {
-    if (t.type !== TransactionType.EXPENSE) continue;
+    const delta = expenseDelta(t);
+    if (delta === 0) continue;
     const day = Math.min(t.date.getUTCDate(), daysInMonth);
-    cents[day]! += Math.round(Math.abs(t.amount.toNumber()) * 100);
+    cents[day]! += Math.round(delta * 100);
   }
 
   const data: DashboardHeatmapDay[] = [];

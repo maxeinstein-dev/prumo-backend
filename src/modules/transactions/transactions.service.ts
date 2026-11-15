@@ -33,6 +33,13 @@ import type {
  * A reference month only makes sense on INCOME/EXPENSE rows (transfers and allocations are cash moves) and within
  * +-24 months of the transaction date (a typo like 2062-10 would hide the row from every month view).
  */
+/** A refund is an income row that cancels an expense: no other type carries the marker. */
+export function assertValidRefund(isRefund: boolean, type: string): void {
+  if (isRefund && type !== TransactionType.INCOME) {
+    throw new BadRequestError('isRefund only applies to INCOME transactions');
+  }
+}
+
 export function assertValidCompetence(competenceMonth: string | null, type: string, date: Date): void {
   if (competenceMonth === null) return;
   if (type !== TransactionType.INCOME && type !== TransactionType.EXPENSE) {
@@ -207,6 +214,8 @@ export async function createTransaction(
   const isPaid = input.paid !== undefined ? input.paid : true;
   const competenceMonth = input.competenceMonth ?? null;
   assertValidCompetence(competenceMonth, transactionType, date);
+  const isRefund = input.isRefund === true;
+  assertValidRefund(isRefund, transactionType);
   const isSplit = input.isSplit === true && input.splits && input.splits.length > 0;
   
   const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -231,6 +240,7 @@ export async function createTransaction(
         ...(input.sourceRef && { sourceRef: input.sourceRef }),
         ...(input.attachmentUrl && { attachmentUrl: input.attachmentUrl }),
         ...(competenceMonth && { competenceMonth }),
+        ...(isRefund && { isRefund }),
       },
       include: {
         account: {
@@ -851,6 +861,11 @@ async function updateTransactionOnce(
     assertValidCompetence(finalCompetence ?? null, finalType, input.date ?? existingTransaction.date);
   }
 
+  // Refund marker: only INCOME rows carry it; turning the row into an expense takes it off
+  const finalTypeForRefund = input.type ?? existingTransaction.type;
+  const finalRefund = input.isRefund ?? (finalTypeForRefund === TransactionType.INCOME ? existingTransaction.isRefund : false);
+  assertValidRefund(finalRefund, finalTypeForRefund);
+
   // Calculate balance adjustments
   const oldAmount = existingTransaction.amount.toNumber();
   const newAmount = input.amount ?? oldAmount;
@@ -991,6 +1006,7 @@ async function updateTransactionOnce(
         ...(input.attachmentUrl !== undefined && { attachmentUrl: input.attachmentUrl }),
         ...(input.sourceRef !== undefined && { sourceRef: input.sourceRef }),
         ...(input.competenceMonth !== undefined && { competenceMonth: input.competenceMonth }),
+        ...(finalRefund !== existingTransaction.isRefund && { isRefund: finalRefund }),
       },
       include: {
         account: {
