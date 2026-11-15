@@ -37,9 +37,22 @@ export function isAppOutflow(c: Pick<PairCandidate, 'package' | 'parsed'>): bool
   return c.package === MERCADO_PAGO_PACKAGE && !!r && r.kind === 'PIX_OUT';
 }
 
+/** The ids some dismissed capture already points to as its twin: each Pix has one e-mail and one app notification. */
+function takenTwins(candidates: readonly DuplicateCandidate[]): Set<string> {
+  const taken = new Set<string>();
+  for (const c of candidates) {
+    const twin = c.parsed && typeof c.parsed === 'object' ? (c.parsed as { duplicateOf?: unknown }).duplicateOf : undefined;
+    if (typeof twin === 'string' && twin) taken.add(twin);
+  }
+  return taken;
+}
+
 export function duplicatesToDismiss(candidates: readonly DuplicateCandidate[]): DuplicateToDismiss[] {
-  const emails = candidates.filter((c) => LIVE.has(c.status) && isEmailOutflow(c));
-  const apps = candidates.filter((c) => LIVE.has(c.status) && isAppOutflow(c));
+  // A capture that is already the twin of another one is spoken for (test of 15/11/2026: the Google Pay e-mail of a
+  // second Pix of the same amount was taken for the repeat of an app notification whose own e-mail was dismissed before).
+  const taken = takenTwins(candidates);
+  const emails = candidates.filter((c) => LIVE.has(c.status) && isEmailOutflow(c) && !taken.has(c.id));
+  const apps = candidates.filter((c) => LIVE.has(c.status) && isAppOutflow(c) && !taken.has(c.id));
   const out: DuplicateToDismiss[] = [];
   // Two confirmed sides are both in the books already, and nothing pending is left to dismiss.
   const pairs = pairClosest(emails, apps, DUPLICATE_WINDOW_MS, (email, app) => email.status === 'PENDING' || app.status === 'PENDING');

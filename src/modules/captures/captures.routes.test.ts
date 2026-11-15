@@ -608,6 +608,15 @@ describe('POST /captures: Gmail senders and duplicate e-mails', () => {
     expect(res.json().data.results[0]).toEqual({ dedupKey: expect.any(String), status: 'created' });
   });
 
+  it('keeps the e-mail of a second Pix of the same amount when the app notification already took the first e-mail (15/11)', async () => {
+    const token = await newToken();
+    await post(token, { items: [googlePay({ postedAt: '2026-11-15T20:27:20.000Z' })] });
+    await post(token, { items: [mpSent({ postedAt: '2026-11-15T20:27:34.000Z' })] });
+    await post(token, { items: [googlePay({ postedAt: '2026-11-15T20:30:04.000Z' })] });
+    const mails = store.captures.filter((c) => c.package === GM).map((c) => [(c.postedAt as Date).toISOString().slice(11, 19), c.status]);
+    expect(mails).toEqual([['20:27:20', 'DISMISSED'], ['20:30:04', 'PENDING']]);
+  });
+
   it('raises one phone notice per Pix: the app notification after a pending e-mail stays, silent', async () => {
     const token = await newToken();
     const first = await post(token, { items: [googlePay()] });

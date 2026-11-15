@@ -73,6 +73,22 @@ describe('duplicatesToDismiss', () => {
     expect(duplicatesToDismiss([cap({}), email(1, { status: 'DISMISSED' })])).toEqual([]);
   });
 
+  it('an app outflow that already has its e-mail twin does not take another e-mail (test of 15/11, 17:27 to 17:30)', () => {
+    // Ida: Pix from Mercado Pago with Google Pay: the e-mail (17:27:20) was dismissed as the twin of the app (17:27:34).
+    const app = cap({ postedAt: at(27, 34) });
+    const firstEmail = email(27, { postedAt: at(27, 20), status: 'DISMISSED', parsed: { kind: 'WALLET_PIX_OUT', amountCents: 1000, duplicateOf: app.id } });
+    // Volta: Pix from the Nubank account with Google Pay, same amount, 2.5 minutes later: another Pix, not a repeat.
+    const volta = email(30, { postedAt: at(30, 4) });
+    expect(duplicatesToDismiss([app, firstEmail, volta])).toEqual([]);
+  });
+
+  it('a confirmed e-mail that already has its app twin does not take another app notification', () => {
+    const mail = email(0, { status: 'CONFIRMED' });
+    const firstApp = cap({ postedAt: at(1), status: 'DISMISSED', parsed: { kind: 'PIX_OUT', amountCents: 1000, duplicateOf: mail.id } });
+    const secondApp = cap({ postedAt: at(3) });
+    expect(duplicatesToDismiss([mail, firstApp, secondApp])).toEqual([]);
+  });
+
   it('never pairs an e-mail with another e-mail, and ignores readings without an amount', () => {
     expect(duplicatesToDismiss([email(0), email(1)])).toEqual([]);
     expect(duplicatesToDismiss([cap({ cents: null }), email(1, { cents: null })])).toEqual([]);
