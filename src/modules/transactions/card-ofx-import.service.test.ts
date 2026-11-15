@@ -435,6 +435,11 @@ describe('card OFX import: a month that has sheet rows', () => {
       ['EXPENSE', 149.9, 'OTHER_EXPENSES'],
       ['INCOME', 149.9, 'OTHER_INCOME'],
     ]);
+    // Only the refund line carries the refund marker; the purchase it cancels does not
+    expect(store.transactions.filter((t) => t.description?.includes('Loja Mu')).map((t) => [t.type, t.isRefund === true])).toEqual([
+      ['EXPENSE', false],
+      ['INCOME', true],
+    ]);
   });
 
   it('skips selected groups that no longer exist when the confirm recomputes', async () => {
@@ -867,6 +872,8 @@ describe('card OFX import: a month without sheet rows', () => {
     expect(tx('fut-b6')).toMatchObject({ date: '2026-11-27', description: 'Curso Beta - Parcela 6/6' });
     const discount = store.transactions.find((t) => t.description === 'Desconto Antecipação Curso Beta')!;
     expect(discount).toMatchObject({ type: 'INCOME', amount: 2, categoryName: 'OTHER_INCOME', installmentId: null });
+    // An early-payment discount is a credit but not a refund of a purchase: no marker
+    expect(discount.isRefund).not.toBe(true);
   });
 
   it('gives a consumed future the bank amount through the transaction service (the card balance moves)', async () => {

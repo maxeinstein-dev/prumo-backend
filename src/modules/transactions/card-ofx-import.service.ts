@@ -1551,6 +1551,8 @@ async function createLines(ctx: CreateContext, refs: string[], fixedCategory?: s
           paid: true,
           isSplit: false,
           sourceRef: line.ref,
+          // The credit of a purchase (not the payment of the invoice, not the early-payment discount) is a refund
+          ...(line.kind === 'refund' ? { isRefund: true } : {}),
           ...(installment
             ? { installmentId: ofxPlanId(line.fitid), installmentNumber: installment.number, totalInstallments: installment.total }
             : {}),

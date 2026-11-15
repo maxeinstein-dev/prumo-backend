@@ -780,6 +780,28 @@ describe('confirmMaxFinImport: rows already stored', () => {
     expect(createdInputs().map((input) => input.sourceRef)).toEqual([REF.luz]);
   });
 
+  it('marks as a refund the credit rows that reverse a purchase, and nothing else', async () => {
+    const refund = makeConfirmRow({ section: 'credit', type: 'INCOME', description: 'Estorno Loja A', amount: 156, categoryKey: 'Compras' });
+    const refundInDebit = makeConfirmRow({ section: 'debit', type: 'INCOME', description: 'Estorno luz', amount: 20 });
+    const payment = makeConfirmRow({ section: 'credit', type: 'INCOME', description: 'Pagamento recebido', amount: 300 });
+    const discount = makeConfirmRow({ section: 'credit', type: 'INCOME', description: 'Desconto Antecipação Curso', amount: 2 });
+    const salary = makeConfirmRow({ section: 'income', description: 'Salario' });
+    const purchase = makeConfirmRow({ section: 'credit', description: 'Mercado' });
+    const debitInSheetIncome = makeConfirmRow({ section: 'income', type: 'EXPENSE', description: 'Devolucao', amount: 10 });
+    useStore([]);
+
+    await confirm([refund, refundInDebit, payment, discount, salary, purchase, debitInSheetIncome]);
+
+    const marked = (description: string) => createdInputs().find((i) => i.description === description)?.isRefund === true;
+    expect(marked('Estorno Loja A')).toBe(true);
+    expect(marked('Estorno luz')).toBe(true);
+    expect(marked('Pagamento recebido')).toBe(false);
+    expect(marked('Desconto Antecipação Curso')).toBe(false);
+    expect(marked('Salario')).toBe(false);
+    expect(marked('Mercado')).toBe(false);
+    expect(marked('Devolucao')).toBe(false);
+  });
+
   it('with replace, deletes the stored row first and only then creates the new one', async () => {
     const row = makeConfirmRow({ sourceRef: REF.padaria, amount: 40, replace: true });
     useStore([{ id: 'old-1', sourceRef: REF.padaria, accountId: 'acc-debit' }]);

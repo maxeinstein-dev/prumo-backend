@@ -27,6 +27,7 @@ export interface FakeTransaction {
   totalInstallments: number | null;
   recurringTransactionId?: string | null;
   isSplit?: boolean;
+  isRefund?: boolean;
   createdAt: number;
 }
 
@@ -425,6 +426,7 @@ export const fakeServices = {
       installmentId: (input.installmentId as string) ?? null,
       installmentNumber: (input.installmentNumber as number) ?? null,
       totalInstallments: (input.totalInstallments as number) ?? null,
+      ...(input.isRefund === true ? { isRefund: true } : {}),
     });
     return { ...row };
   }),
