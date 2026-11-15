@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { matchesWhere, type Row } from '../../shared/__fixtures__/where-eval.js';
 
 // Month planning in the dashboard, the budget summary and the budget alerts follows the reference month
-// (competence_month) and falls back to the month of the date. The heatmap is the calendar of the cash and stays by date.
+// (competence_month) and falls back to the month of the date. The heatmap follows it too (see dashboard.aggregates-heatmap.test.ts).
 const HH = 'hh-1';
 const store = vi.hoisted(() => ({
   transactions: [] as Array<Record<string, unknown>>,
@@ -93,14 +93,6 @@ describe('dashboard overview', () => {
     tx({ date: '2026-09-29', competenceMonth: '2026-10', amount: -120 });
     const o = await getDashboardOverview({ householdId: HH, month: '2026-10' });
     expect(o.categoryBreakdown.find((c) => c.name === 'GROCERIES')?.expense).toBe(120);
-  });
-
-  it('the heatmap stays on the calendar (date): it does not read the reference month', async () => {
-    tx({ date: '2026-09-29', competenceMonth: '2026-10', amount: -120 });
-    await getDashboardOverview({ householdId: HH, month: '2026-10' });
-    const sql = store.rawCalls.map((c) => (c[0] as TemplateStringsArray).join('?')).join('\n');
-    expect(sql).toContain('EXTRACT(DAY FROM date)');
-    expect(sql).not.toContain('competence');
   });
 });
 
