@@ -174,11 +174,13 @@ async function deletePersonLocked(householdId: string, personId: string): Promis
     if (locked.length === 0) throw new NotFoundError('Person');
     const employments = await tx.employment.count({ where: { personId } });
     if (employments > 0) throw new ConflictError('This person owns an employment: move or delete it first (or deactivate the person)');
-    const [shares, settlements] = await Promise.all([
+    // A person in the default split of a recurrence (P19) is kept too: deleting would cascade the rule away in silence
+    const [shares, settlements, defaultSplitRules] = await Promise.all([
       tx.transactionShare.count({ where: { personId } }),
       tx.settlement.count({ where: { personId } }),
+      tx.recurringTransactionShare.count({ where: { personId } }),
     ]);
-    if (shares + settlements > 0) {
+    if (shares + settlements + defaultSplitRules > 0) {
       const updated = await tx.person.update({ where: { id: personId }, data: { isActive: false } });
       const aliases = (await loadAliasRows(tx, householdId)).filter((a) => a.personId === personId);
       return { deleted: false as const, person: toPersonDto(updated, aliases) };

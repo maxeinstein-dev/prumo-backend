@@ -21,7 +21,13 @@ const num = (value: { toNumber(): number } | null | undefined): number | null =>
  * Validates a default split typed by the user (shape and the people: each an active person of the household).
  * @throws BadRequestError / NotFoundError('Person')
  */
-export async function assertDefaultSharesUsable(db: Db, householdId: string, entries: readonly DefaultShareInput[]): Promise<void> {
+export async function assertDefaultSharesUsable(
+  db: Db,
+  householdId: string,
+  entries: readonly DefaultShareInput[],
+  /** On an edit: people already in the stored split. Deactivated since, they may stay (the occurrence skips them). */
+  alreadyInSplit: ReadonlySet<string> = new Set(),
+): Promise<void> {
   const problem = validateDefaultShares(entries);
   if (problem) throw new BadRequestError(problem);
   if (entries.length === 0) return;
@@ -33,7 +39,7 @@ export async function assertDefaultSharesUsable(db: Db, householdId: string, ent
   for (const entry of entries) {
     const person = byId.get(entry.personId);
     if (!person) throw new NotFoundError('Person');
-    if (!person.isActive) throw new BadRequestError(`${person.name} is inactive: reactivate the person before sharing with them`);
+    if (!person.isActive && !alreadyInSplit.has(person.id)) throw new BadRequestError(`${person.name} is inactive: reactivate the person before sharing with them`);
   }
 }
 
