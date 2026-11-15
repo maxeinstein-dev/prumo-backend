@@ -1,17 +1,19 @@
 import { createHash } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
-import { ConflictError, NotFoundError } from '../../shared/errors/index.js';
+import { BadRequestError, ConflictError, NotFoundError } from '../../shared/errors/index.js';
 import { buildPaginationArgs, createPaginatedResponse } from '../../shared/utils/pagination.js';
-import { createTransaction, getTransactionWithHousehold } from '../transactions/transactions.service.js';
+import { createTransaction, createTransfer, getTransactionWithHousehold } from '../transactions/transactions.service.js';
 import type { CreateTransactionInput } from '../transactions/transactions.schema.js';
 import { checkNewTransactionSplit, writeNewTransactionSharesInTx } from '../people/shares.service.js';
 import { buildCategoryHints, type CategoryHints } from './capture-category.js';
 import { buildSuggestion, suggestedPlace, type SuggestionCardRule, type SuggestionRule } from './capture-suggestion.js';
 import { PARSER_VERSION, parseCapture, type ParsedCapture } from './parsers/index.js';
 import { isAllowedGmailSender } from './parsers/gmail.js';
-import { DUPLICATE_WINDOW_MS, GMAIL_PACKAGE, duplicateEmails, isAppOutflow, isEmailOutflow } from './capture-duplicates.js';
-import type { AccountRuleInput, CaptureItemInput, CaptureStatusValue, CardRuleInput, ConfirmCaptureInput } from './captures.schema.js';
+import { DUPLICATE_WINDOW_MS, GMAIL_PACKAGE, duplicatesToDismiss, isAppOutflow, isEmailOutflow } from './capture-duplicates.js';
+import type { AccountRuleInput, CaptureItemInput, CaptureStatusValue, CardRuleInput, ConfirmCaptureInput, ConfirmTransferInput } from './captures.schema.js';
+import { readingOf } from './capture-pairing.js';
+import { TRANSFER_WINDOW_MS, isTransferIn, isTransferOut, ownTransferPairs } from './capture-transfer.js';
 
 /** A notice is dismissed (decided 13/11/2026; "restore" brings it back); anything else waits for the user. */
 function statusOfReading(parsed: ParsedCapture | null): 'PENDING' | 'DISMISSED' {
@@ -36,19 +38,27 @@ export interface CaptureResult {
   notice?: CaptureNotice;
 }
 
+/** A stored capture as the duplicate pass sees it (from the request, or from a reparse). */
+interface FreshCapture {
+  dedupKey: string;
+  postedAt: Date;
+  package: string;
+  parsed: unknown;
+}
+
 /**
- * After new captures are stored: an e-mail outflow that repeats an app outflow (same amount, at most ten minutes apart)
- * is dismissed, with `duplicateOf` in its reading so the screen can say why (see capture-duplicates.ts). Only pairs that
- * involve a capture of this request are acted on, so an e-mail the user restored is not dismissed again by an unrelated
- * upload. Returns the dedup keys of the e-mails it dismissed.
+ * After captures are stored or re-read: of an e-mail and a Mercado Pago app notification of the same Pix (see
+ * capture-duplicates.ts), the e-mail is dismissed, or the app notification when the e-mail was already confirmed; the
+ * dismissed one carries `duplicateOf` in its reading so the screen can say why. Only pairs that involve one of `fresh`
+ * are acted on, so a capture the user restored is not dismissed again by an unrelated upload.
+ *
+ * Returns the dedup keys of `fresh` that must not raise a phone notice: the ones dismissed, and the ones whose twin
+ * arrived earlier (that twin already raised the notice for this Pix).
  */
-async function dismissDuplicateEmails(
-  householdId: string,
-  fresh: ReadonlyArray<{ dedupKey: string; postedAt: Date; item: { package: string }; parsed: ParsedCapture | null }>,
-): Promise<Set<string>> {
-  const out = new Set<string>();
-  const relevant = fresh.filter((e) => isEmailOutflow({ package: e.item.package, parsed: e.parsed }) || isAppOutflow({ package: e.item.package, parsed: e.parsed }));
-  if (relevant.length === 0) return out;
+async function dismissDuplicates(householdId: string, fresh: readonly FreshCapture[]): Promise<Set<string>> {
+  const silenced = new Set<string>();
+  const relevant = fresh.filter((e) => isEmailOutflow(e) || isAppOutflow(e));
+  if (relevant.length === 0) return silenced;
   const times = relevant.map((e) => e.postedAt.getTime());
   const window = await prisma.capturedNotification.findMany({
     where: {
@@ -59,18 +69,21 @@ async function dismissDuplicateEmails(
   });
   const freshKeys = new Set(relevant.map((e) => e.dedupKey));
   const byId = new Map(window.map((c) => [c.id, c]));
-  for (const pair of duplicateEmails(window)) {
-    const email = byId.get(pair.id)!;
-    const app = byId.get(pair.duplicateOf)!;
-    if (!freshKeys.has(email.dedupKey) && !freshKeys.has(app.dedupKey)) continue;
-    const reading = (email.parsed ?? {}) as Prisma.InputJsonObject;
+  for (const pair of duplicatesToDismiss(window)) {
+    const dropped = byId.get(pair.id)!;
+    const kept = byId.get(pair.duplicateOf)!;
+    if (!freshKeys.has(dropped.dedupKey) && !freshKeys.has(kept.dedupKey)) continue;
+    const reading = (dropped.parsed ?? {}) as Prisma.InputJsonObject;
     const { count } = await prisma.capturedNotification.updateMany({
-      where: { id: email.id, householdId, status: 'PENDING' },
-      data: { status: 'DISMISSED', parsed: { ...reading, duplicateOf: app.id } },
+      where: { id: dropped.id, householdId, status: 'PENDING' },
+      data: { status: 'DISMISSED', parsed: { ...reading, duplicateOf: kept.id } },
     });
-    if (count > 0) out.add(email.dedupKey);
+    if (count === 0) continue;
+    if (freshKeys.has(dropped.dedupKey)) silenced.add(dropped.dedupKey);
+    // The kept one arrived in this request only if it is fresh; otherwise it already raised the notice of this Pix.
+    if (freshKeys.has(kept.dedupKey) && !freshKeys.has(dropped.dedupKey)) silenced.add(kept.dedupKey);
   }
-  return out;
+  return silenced;
 }
 
 /** A spending worth a notice: an EXPENSE reading with a positive value; never a notice (IGNORE) or an income. */
@@ -145,7 +158,10 @@ export async function ingestCaptures(
     select: { dedupKey: true },
   });
   const created = new Set(inserted.map((row) => row.dedupKey));
-  const dismissed = await dismissDuplicateEmails(scope.householdId, [...firstByKey.values()].filter((e) => created.has(e.dedupKey)));
+  const dismissed = await dismissDuplicates(
+    scope.householdId,
+    [...firstByKey.values()].filter((e) => created.has(e.dedupKey)).map((e) => ({ dedupKey: e.dedupKey, postedAt: e.postedAt, package: e.item.package, parsed: e.parsed })),
+  );
 
   const reported = new Set<string>();
   return prepared.map(({ dedupKey, parsed, ignored }) => {
@@ -153,7 +169,7 @@ export async function ingestCaptures(
     const isCreator = created.has(dedupKey) && !reported.has(dedupKey);
     reported.add(dedupKey);
     if (!isCreator) return { dedupKey, status: 'duplicate' as const };
-    // An e-mail dismissed as the duplicate of an app notification gets no notice: the app's capture already has one.
+    // One notice per Pix: a capture dismissed as a duplicate, or whose twin arrived earlier, raises none.
     const notice = dismissed.has(dedupKey) ? undefined : noticeOfReading(parsed);
     return { dedupKey, status: 'created' as const, ...(notice ? { notice } : {}) };
   });
@@ -176,15 +192,56 @@ const CAPTURE_SELECT = {
 
 type CaptureRow = Prisma.CapturedNotificationGetPayload<{ select: typeof CAPTURE_SELECT }>;
 
+/** The other side of a possible own transfer (see capture-transfer.ts), with the account its draft would take. */
+export interface TransferPairDto {
+  captureId: string;
+  /** Which side THIS capture is: the outflow or the income. */
+  side: 'out' | 'in';
+  partnerAccountId: string | null;
+}
+
 function toCaptureDto(
   row: CaptureRow,
   rules: readonly SuggestionRule[],
   cardRules: readonly SuggestionCardRule[] = [],
-  hints?: CategoryHints
+  hints?: CategoryHints,
+  transferPair: TransferPairDto | null = null,
 ) {
   // Explicit fields: the rows of the transition routes also carry the dedupKey, which is not part of the API.
   const { id, package: pkg, title, text, postedAt, status, parsed, transactionId } = row;
-  return { id, package: pkg, title, text, postedAt, status, parsed, transactionId, suggestion: buildSuggestion(row, rules, cardRules, hints) };
+  return { id, package: pkg, title, text, postedAt, status, parsed, transactionId, suggestion: buildSuggestion(row, rules, cardRules, hints), transferPair };
+}
+
+/**
+ * The possible own transfers that involve a capture of the page: the pending outflows and own incomes posted around the
+ * page are read (one query, the household only) and paired. A partner may be on another page; its suggested account
+ * comes with the pair so the screen can offer the transfer with both accounts filled.
+ */
+async function loadTransferPairs(
+  householdId: string,
+  rows: readonly CaptureRow[],
+  rules: readonly SuggestionRule[],
+  cardRules: readonly SuggestionCardRule[],
+): Promise<Map<string, TransferPairDto>> {
+  const out = new Map<string, TransferPairDto>();
+  const relevant = rows.filter((r) => isTransferOut(r) || isTransferIn(r));
+  if (relevant.length === 0) return out;
+  const times = relevant.map((r) => r.postedAt.getTime());
+  const window = await prisma.capturedNotification.findMany({
+    where: {
+      householdId,
+      status: 'PENDING',
+      postedAt: { gte: new Date(Math.min(...times) - TRANSFER_WINDOW_MS), lte: new Date(Math.max(...times) + TRANSFER_WINDOW_MS) },
+    },
+    select: CAPTURE_SELECT,
+  });
+  const byId = new Map(window.map((c) => [c.id, c]));
+  const accountOf = (id: string) => buildSuggestion(byId.get(id)!, rules, cardRules).accountId;
+  for (const pair of ownTransferPairs(window)) {
+    out.set(pair.outId, { captureId: pair.inId, side: 'out', partnerAccountId: accountOf(pair.inId) });
+    out.set(pair.inId, { captureId: pair.outId, side: 'in', partnerAccountId: accountOf(pair.outId) });
+  }
+  return out;
 }
 
 /** How far back the category hint looks: a year of the household's own transactions is enough to know a place. */
@@ -236,8 +293,14 @@ export async function listCaptures(householdId: string, query: { status: Capture
     prisma.captureCardRule.findMany({ where: { householdId }, select: { package: true, cardLast4: true, accountId: true } }),
   ]);
   const page = createPaginatedResponse(rows, query.limit);
-  const hints = await loadCategoryHints(householdId, page.data);
-  return { data: page.data.map((row) => toCaptureDto(row, rules, cardRules, hints)), pagination: page.pagination };
+  const [hints, pairs] = await Promise.all([
+    loadCategoryHints(householdId, page.data),
+    loadTransferPairs(householdId, page.data, rules, cardRules),
+  ]);
+  return {
+    data: page.data.map((row) => toCaptureDto(row, rules, cardRules, hints, pairs.get(row.id) ?? null)),
+    pagination: page.pagination,
+  };
 }
 
 export async function countCaptures(householdId: string, status: CaptureStatusValue): Promise<number> {
@@ -363,6 +426,71 @@ async function resolveSourceRefConflict(householdId: string, captureId: string, 
 }
 
 /** PENDING -> DISMISSED. Idempotent on DISMISSED; CONFIRMED and IGNORED answer 409. */
+export interface TransferPairResult {
+  /** false when both captures were already confirmed with this transfer (nothing was created by this call). */
+  created: boolean;
+  captures: { id: string; status: CaptureStatusValue; transactionId: string }[];
+  transaction: Awaited<ReturnType<typeof getTransactionWithHousehold>>;
+}
+
+/**
+ * Confirms an outflow capture and an own-income capture of the same Pix as ONE transfer between the two accounts
+ * (decided by the user on 15/11/2026): no income, no expense, the balance moves once. Both captures are claimed in the
+ * same database transaction as the transfer and its balances, so a side that is no longer pending writes nothing.
+ * Idempotent: when both already point to the same transaction it answers that one. The transfer carries the outflow's
+ * reference, so two simultaneous confirmations create one transfer.
+ */
+export async function confirmTransferPair(householdId: string, input: ConfirmTransferInput): Promise<TransferPairResult> {
+  const [outCapture, inCapture] = await Promise.all([loadCapture(householdId, input.outCaptureId), loadCapture(householdId, input.inCaptureId)]);
+  const together = (o: { status: string; transactionId: string | null }, i: { status: string; transactionId: string | null }) =>
+    o.status === 'CONFIRMED' && i.status === 'CONFIRMED' && !!o.transactionId && o.transactionId === i.transactionId;
+  if (together(outCapture, inCapture)) return transferResult(householdId, [outCapture.id, inCapture.id], outCapture.transactionId!, false);
+  if (outCapture.status !== 'PENDING' || inCapture.status !== 'PENDING') {
+    throw new ConflictError('Both captures must be pending to be confirmed as a transfer');
+  }
+  const outReading = readingOf(outCapture.parsed);
+  const inReading = readingOf(inCapture.parsed);
+  if (outCapture.id === inCapture.id || !isTransferOut(outCapture) || !isTransferIn(inCapture) || outReading!.cents !== inReading!.cents) {
+    throw new BadRequestError('The captures are not an outflow and an own income of the same amount');
+  }
+
+  const sourceRef = captureSourceRef(outCapture.dedupKey);
+  try {
+    const transfer = await createTransfer(
+      {
+        householdId,
+        fromAccountId: input.fromAccountId,
+        toAccountId: input.toAccountId,
+        amount: input.amount,
+        date: input.date,
+        ...(input.description ? { description: input.description } : {}),
+        sourceRef,
+      },
+      {
+        inTransaction: async (tx, created) => {
+          const claimed = await tx.capturedNotification.updateMany({
+            where: { id: { in: [outCapture.id, inCapture.id] }, householdId, status: 'PENDING' },
+            data: { status: 'CONFIRMED', transactionId: created.id },
+          });
+          if (claimed.count !== 2) throw new ConflictError('One of the captures is no longer pending');
+        },
+      }
+    );
+    return transferResult(householdId, [outCapture.id, inCapture.id], transfer.id, true);
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
+    // Another confirmation won the race: answer its transfer when it took both captures.
+    const [o, i] = await Promise.all([loadCapture(householdId, outCapture.id), loadCapture(householdId, inCapture.id)]);
+    if (together(o, i)) return transferResult(householdId, [o.id, i.id], o.transactionId!, false);
+    throw new ConflictError('The outflow was already confirmed some other way');
+  }
+}
+
+async function transferResult(householdId: string, ids: string[], transactionId: string, created: boolean): Promise<TransferPairResult> {
+  const transaction = await getTransactionWithHousehold(transactionId, householdId);
+  return { created, captures: ids.map((id) => ({ id, status: 'CONFIRMED' as const, transactionId })), transaction };
+}
+
 export async function dismissCapture(householdId: string, id: string) {
   const { count } = await prisma.capturedNotification.updateMany({
     where: { id, householdId, status: 'PENDING' },
@@ -487,11 +615,12 @@ export interface ReparseResult {
 export async function reparseCaptures(householdId: string): Promise<ReparseResult> {
   const rows = await prisma.capturedNotification.findMany({
     where: { householdId, status: { in: REPARSABLE_STATUSES }, OR: READ_BY_OLDER_PARSER },
-    select: { id: true, package: true, title: true, text: true, status: true },
+    select: { id: true, package: true, title: true, text: true, status: true, dedupKey: true, postedAt: true },
     orderBy: CAPTURE_ORDER,
     take: REPARSE_LIMIT,
   });
   const result: ReparseResult = { scanned: rows.length, updated: 0, understood: 0, dismissed: 0, notUnderstood: 0, parserVersion: PARSER_VERSION };
+  const reread: FreshCapture[] = [];
   for (const row of rows) {
     const parsed = parseCapture(row);
     const { count } = await prisma.capturedNotification.updateMany({
@@ -503,10 +632,13 @@ export async function reparseCaptures(householdId: string): Promise<ReparseResul
       },
     });
     if (count !== 1) continue;
+    reread.push({ dedupKey: row.dedupKey, postedAt: row.postedAt, package: row.package, parsed });
     result.updated += 1;
     if (!parsed) result.notUnderstood += 1;
     else if (parsed.ignore) result.dismissed += 1;
     else result.understood += 1;
   }
+  // A capture read again may now be the twin of another one (e.g. an app Pix sent that the older reader did not read).
+  await dismissDuplicates(householdId, reread);
   return result;
 }

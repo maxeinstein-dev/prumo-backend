@@ -2667,16 +2667,21 @@ export async function undoCreditCardPayment(
  * Create a transfer transaction between accounts
  * Transfer does not affect total balance (patrimony), only moves available balance
  */
-export async function createTransfer(input: {
-  householdId: string;
-  fromAccountId: string;
-  toAccountId: string;
-  amount: number;
-  description?: string;
-  date: Date;
-  notes?: string;
-}) {
-  const { householdId, fromAccountId, toAccountId, amount, description, date, notes } = input;
+export async function createTransfer(
+  input: {
+    householdId: string;
+    fromAccountId: string;
+    toAccountId: string;
+    amount: number;
+    description?: string;
+    date: Date;
+    notes?: string;
+    /** Unique per household: a second transfer with the same reference fails with P2002 (used by the captures). */
+    sourceRef?: string;
+  },
+  hooks: { inTransaction?: (tx: Prisma.TransactionClient, created: { id: string }) => Promise<void> } = {},
+) {
+  const { householdId, fromAccountId, toAccountId, amount, description, date, notes, sourceRef } = input;
 
   if (fromAccountId === toAccountId) {
     throw new BadRequestError('Cannot transfer to the same account');
@@ -2731,6 +2736,7 @@ export async function createTransfer(input: {
         date,
         notes: notes || `Transfer from ${fromAccount.name} to ${toAccount.name}`,
         paid: true, // Transfers are always considered "paid"
+        ...(sourceRef ? { sourceRef } : {}),
       },
       include: {
         fromAccount: {
@@ -2741,6 +2747,9 @@ export async function createTransfer(input: {
         },
       },
     });
+
+    // Written in the same database transaction (e.g. the captures this transfer confirms): a failure undoes it all.
+    if (hooks.inTransaction) await hooks.inTransaction(tx, transaction);
 
     return transaction;
   });

@@ -47,8 +47,15 @@ const GOOGLE_PAY_PIX = new RegExp(String.raw`Seu Pix de ${BRL} no Google Pay foi
  * with no account: the user picks it when confirming (decided 15/11/2026). A Pix from the Nubank account made this way
  * has no other notification; one from Mercado Pago also has the app's, and then this e-mail is the duplicate.
  */
+/**
+ * The body of the same e-mail (print of 15/11/2026): "Seu Pix foi concluído com sucesso." with the amount on the next
+ * line ("R$37,50"). Read too, because the phone keeps the longest text of the notification, which may be the body alone.
+ */
+const GOOGLE_PAY_PIX_BODY = new RegExp(String.raw`Seu Pix foi concluído com sucesso\.? ${BRL}`, 'i');
+
 function parseGooglePayPix(text: string) {
-  const m = GOOGLE_PAY_PIX.exec(text.replace(/\s+/g, ' '));
+  const flat = text.replace(/\s+/g, ' ');
+  const m = GOOGLE_PAY_PIX.exec(flat) ?? GOOGLE_PAY_PIX_BODY.exec(flat);
   if (!m) return null;
   const cents = parseAnyPositiveCents(m[1]!);
   if (cents === null) return null;

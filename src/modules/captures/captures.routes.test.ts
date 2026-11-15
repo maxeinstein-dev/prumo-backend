@@ -596,6 +596,36 @@ describe('POST /captures: Gmail senders and duplicate e-mails', () => {
     expect(store.captures.find((c) => c.package === GM)).toMatchObject({ status: 'DISMISSED', parsed: { duplicateOf: store.captures.find((c) => c.package === MP)!.id } });
   });
 
+  it('when the e-mail was already confirmed, dismisses the app notification that arrives later, with no notice', async () => {
+    const token = await newToken();
+    await post(token, { items: [googlePay()] });
+    const mail = store.captures.find((c) => c.package === GM)!;
+    mail.status = 'CONFIRMED'; // the user confirmed the e-mail before the app notification arrived
+
+    const res = await post(token, { items: [mpSent({ postedAt: '2026-11-15T12:04:00.000Z' })] });
+    const app1 = store.captures.find((c) => c.package === MP)!;
+    expect(app1).toMatchObject({ status: 'DISMISSED', parsed: { kind: 'PIX_OUT', duplicateOf: mail.id } });
+    expect(res.json().data.results[0]).toEqual({ dedupKey: expect.any(String), status: 'created' });
+  });
+
+  it('raises one phone notice per Pix: the app notification after a pending e-mail stays, silent', async () => {
+    const token = await newToken();
+    const first = await post(token, { items: [googlePay()] });
+    expect(first.json().data.results[0].notice).toMatchObject({ kind: 'WALLET_PIX_OUT' });
+
+    const second = await post(token, { items: [mpSent({ postedAt: '2026-11-15T12:04:00.000Z' })] });
+    expect(store.captures.find((c) => c.package === GM)!.status).toBe('DISMISSED');
+    expect(store.captures.find((c) => c.package === MP)!.status).toBe('PENDING');
+    expect(second.json().data.results[0].notice).toBeUndefined();
+  });
+
+  it('a Pix sent from the app in the same batch as its e-mail keeps its notice', async () => {
+    const token = await newToken();
+    const res = await post(token, { items: [mpSent(), googlePay()] });
+    expect(res.json().data.results[0].notice).toMatchObject({ kind: 'PIX_OUT' });
+    expect(res.json().data.results[1].notice).toBeUndefined();
+  });
+
   it('does not dismiss again an e-mail the user restored when an unrelated outflow arrives later', async () => {
     const token = await newToken();
     await post(token, { items: [mpSent(), googlePay()] });
@@ -607,7 +637,7 @@ describe('POST /captures: Gmail senders and duplicate e-mails', () => {
     expect(mail.status).toBe('PENDING');
   });
 
-  it('keeps an e-mail of another amount, of more than ten minutes later, or of another household', async () => {
+  it('keeps an e-mail of another amount, of more than five minutes later, or of another household', async () => {
     const token = await newToken();
     await post(token, { items: [mpSent(), googlePay({ text: 'Seu Pix de R$11,00 no Google Pay foi realizado com sucesso.' }), googlePay({ postedAt: '2026-11-15T12:11:00.000Z' })] });
     expect(store.captures.filter((c) => c.package === GM).map((c) => c.status)).toEqual(['PENDING', 'PENDING']);
