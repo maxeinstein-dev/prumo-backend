@@ -281,10 +281,10 @@ function getMonthlyMultiplier(frequency?: string): number {
 
 /** The own share of one expense transaction (|amount| minus what people owe the user on it, floor zero), in reais. */
 function ownExpenseOf(t: { id?: string; type?: string; isRefund?: boolean | null }, amount: number, theirShares: ReadonlyMap<string, TheirShare>): number {
-  if (isRefundRow({ type: t.type ?? '', isRefund: t.isRefund })) return -Math.abs(amount);
   const share = t.id ? theirShares.get(t.id) : undefined;
-  if (!share) return Math.abs(amount);
-  return ownAmountCents(Math.round(Math.abs(amount) * 100), share.theirCents) / 100;
+  const own = share ? ownAmountCents(Math.round(Math.abs(amount) * 100), share.theirCents) / 100 : Math.abs(amount);
+  // A refund takes its own part off (a refund nobody divided is all the user's own, see own-share.ts)
+  return isRefundRow({ type: t.type ?? '', isRefund: t.isRefund }) ? -own : own;
 }
 
 /**
@@ -412,6 +412,7 @@ function formatMonthLabel(month: string): string {
 function calculateFixedVsVariable(
   transactions: Array<{
     type: string;
+    isRefund?: boolean | null;
     amount: { toNumber: () => number } | number;
     accountId: string | null;
     account: { type: string } | null;
@@ -425,9 +426,9 @@ function calculateFixedVsVariable(
   let variable = 0;
 
   for (const t of transactions) {
-    if (t.type !== TransactionType.EXPENSE) continue;
-
-    const amount = Math.abs(typeof t.amount === 'number' ? t.amount : t.amount.toNumber());
+    // Expenses, and refunds as negative expense (fixed + variable always equals the month's expense)
+    const amount = expenseDelta(t);
+    if (amount === 0) continue;
 
     // If transaction is linked to a recurring transaction, it's fixed
     if (t.recurringTransactionId && recurringIds.has(t.recurringTransactionId)) {

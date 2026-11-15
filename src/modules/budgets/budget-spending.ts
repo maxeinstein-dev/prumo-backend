@@ -78,14 +78,16 @@ export function measureOf(budget: { measure?: string | null }): BudgetMeasure {
 
 /**
  * Own share of the spending of a budget: the spending minus what other people owe on its expenses (the shares of its
- * category; of every category for the General budget). Expense budgets only; never below zero.
+ * category; of every category for the General budget). Expense budgets only. A refund divided with someone counts the other way, and the result may be negative.
  */
 export function ownSpentOf(budget: { categoryName: string; type: string }, spending: number, theirShares: readonly TheirShare[]): number {
   if (budget.type !== 'EXPENSE') return spending;
   const sharedCents = theirShares
     .filter((share) => budget.categoryName === GENERAL_BUDGET_CATEGORY || share.categoryName === budget.categoryName)
-    .reduce((sum, share) => sum + deductionCents(share), 0);
-  return sharedCents === 0 ? spending : Math.max(0, Math.round(spending * 100) - sharedCents) / 100;
+    // A refund divided with someone gives back that part: it counts the other way
+    .reduce((sum, share) => sum + (share.isRefund ? -1 : 1) * deductionCents(share), 0);
+  // No floor: with refunds the own spending of a category can be negative in a month
+  return sharedCents === 0 ? spending : (Math.round(spending * 100) - sharedCents) / 100;
 }
 
 /**

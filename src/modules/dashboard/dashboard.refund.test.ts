@@ -106,6 +106,14 @@ describe('dashboard: a refund cancels the expense', () => {
     expect(o.summary).toEqual({ totalIncome: 1340, totalExpense: 100, balance: 1240 });
   });
 
+  it('fixed + variable is always the expense of the month, refunds included', async () => {
+    tx({ date: '2026-10-05', amount: -100 });
+    refund({ date: '2026-10-12', amount: 30 });
+    const o = await getDashboardOverview({ householdId: HH, month: '2026-10' });
+    expect(o.fixedVsVariable.fixed + o.fixedVsVariable.variable).toBe(o.summary.totalExpense);
+    expect(o.fixedVsVariable.variable).toBe(70);
+  });
+
   it('the refund follows the reference month like any other row', async () => {
     tx({ date: '2026-10-05', amount: -100 });
     refund({ date: '2026-09-29', competenceMonth: '2026-10', amount: 30 });

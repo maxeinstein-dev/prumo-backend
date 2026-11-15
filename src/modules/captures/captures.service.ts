@@ -378,13 +378,17 @@ export async function confirmCapture(
 
   // P19: the split ("Metade com", "É de") is checked before anything is written, and written with the transaction
   const { shares: split, ...fields } = input;
-  const splitFacts = { type: fields.type ?? '', amountCents: Math.round(fields.amount * 100) };
+  // A capture the reader took for a refund ("A compra em X foi estornada") is an income that cancels an expense:
+  // it is written as one (explicit INCOME, so the expense category of the purchase does not turn it into an expense)
+  // and marked, unless the user turned it into an expense on purpose. The marker is never taken from the client.
+  const asRefund = (capture.parsed as { kind?: unknown } | null)?.kind === 'REFUND' && fields.type !== 'EXPENSE';
+  const splitFacts = { type: asRefund ? 'INCOME' : (fields.type ?? ''), amountCents: Math.round(fields.amount * 100) };
   if (split) await checkNewTransactionSplit(prisma, householdId, splitFacts, split);
 
   const sourceRef = captureSourceRef(capture.dedupKey);
   try {
     const transaction = await createTransaction(
-      { ...fields, householdId, sourceRef, isSplit: false } as CreateTransactionInput,
+      { ...fields, ...(asRefund ? { type: 'INCOME', isRefund: true } : {}), householdId, sourceRef, isSplit: false } as CreateTransactionInput,
       userId,
       {
         inTransaction: async (tx, created) => {

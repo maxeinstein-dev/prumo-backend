@@ -29,10 +29,6 @@ import type {
   UndoPaymentParams,
 } from './transactions.schema.js';
 
-/**
- * A reference month only makes sense on INCOME/EXPENSE rows (transfers and allocations are cash moves) and within
- * +-24 months of the transaction date (a typo like 2062-10 would hide the row from every month view).
- */
 /** A refund is an income row that cancels an expense: no other type carries the marker. */
 export function assertValidRefund(isRefund: boolean, type: string): void {
   if (isRefund && type !== TransactionType.INCOME) {
@@ -40,6 +36,10 @@ export function assertValidRefund(isRefund: boolean, type: string): void {
   }
 }
 
+/**
+ * A reference month only makes sense on INCOME/EXPENSE rows (transfers and allocations are cash moves) and within
+ * +-24 months of the transaction date (a typo like 2062-10 would hide the row from every month view).
+ */
 export function assertValidCompetence(competenceMonth: string | null, type: string, date: Date): void {
   if (competenceMonth === null) return;
   if (type !== TransactionType.INCOME && type !== TransactionType.EXPENSE) {

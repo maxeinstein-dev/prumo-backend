@@ -102,7 +102,7 @@ export async function loadNetWorth(params: NetWorthParams): Promise<NetWorthResp
           type: { in: [TransactionType.INCOME, TransactionType.EXPENSE, TransactionType.TRANSFER] },
           OR: [{ accountId: { in: balanceIds } }, { fromAccountId: { in: balanceIds } }, { toAccountId: { in: balanceIds } }],
         },
-        select: { type: true, amount: true, date: true, accountId: true, fromAccountId: true, toAccountId: true, attachmentUrl: true, notes: true, categoryName: true },
+        select: { type: true, isRefund: true, amount: true, date: true, accountId: true, fromAccountId: true, toAccountId: true, attachmentUrl: true, notes: true, categoryName: true },
       })
     : [];
   const effectsOf = (id: string): Effect[] => {
@@ -175,7 +175,7 @@ export async function loadNetWorth(params: NetWorthParams): Promise<NetWorthResp
       date: { gte: windowStart, lte: windowEnd },
       type: { in: [TransactionType.INCOME, TransactionType.EXPENSE, TransactionType.TRANSFER] },
     },
-    select: { type: true, amount: true, date: true, accountId: true, fromAccountId: true, toAccountId: true, attachmentUrl: true, notes: true, categoryName: true },
+    select: { type: true, isRefund: true, amount: true, date: true, accountId: true, fromAccountId: true, toAccountId: true, attachmentUrl: true, notes: true, categoryName: true },
   });
   const investIds = new Set(invest.map((a) => a.id));
   for (const r of flowRows) {
@@ -189,7 +189,9 @@ export async function loadNetWorth(params: NetWorthParams): Promise<NetWorthResp
     }
     if (r.attachmentUrl?.startsWith(INVOICE_PAYMENT_PREFIX)) continue; // the purchases already count on their own dates
     if (r.notes?.startsWith(ADJUSTMENT_NOTE_PREFIX)) continue; // a balance adjustment is not income or expense
-    if (r.type === TransactionType.INCOME) flowOf(month).incomeCents += cents(r.amount);
+    // A refund is not income: it takes its amount off the expense (budget-spending.ts), so the saving rate does not rise
+    if (r.type === TransactionType.INCOME && r.isRefund) flowOf(month).expenseCents -= cents(r.amount);
+    else if (r.type === TransactionType.INCOME) flowOf(month).incomeCents += cents(r.amount);
     else flowOf(month).expenseCents += cents(r.amount);
   }
 
