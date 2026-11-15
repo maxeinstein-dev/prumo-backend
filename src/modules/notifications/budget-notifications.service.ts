@@ -113,7 +113,7 @@ export async function checkBudgetThresholds(
     // The spending of the budget in its month: the same definition the budget summary shows (see budget-spending.ts)
     const transactions = await prisma.transaction.findMany({
       where: budgetSpendingWhere({ householdId, categoryName: budget.categoryName, type: 'EXPENSE' }, periodWhere),
-      select: { amount: true },
+      select: { amount: true, isRefund: true },
     });
     const fullSpending = sumSpending(transactions);
     const measure = measureOf(budget);

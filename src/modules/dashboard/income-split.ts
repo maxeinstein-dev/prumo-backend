@@ -2,7 +2,7 @@
  * Where the month's income goes (pure part of GET /dashboard/income-split): the spending of each group, the leftover and
  * the housing share. Everything is added in whole cents, so the groups plus the leftover are the income to the cent.
  */
-import { ownAmountCents, type TheirShare } from '../people/own-share.js';
+import { signedOwnCents, type TheirShare } from '../people/own-share.js';
 import { storedToCents } from '../people/money.js';
 import { OTHER_GROUP_KEY, OTHER_GROUP_NAME } from '../category-groups/category-groups.defaults.js';
 import type { GroupRow } from '../category-groups/category-groups.service.js';
@@ -62,15 +62,15 @@ const shareOf = (cents: number, incomeCents: number): number | null => (incomeCe
 
 /**
  * The single "spending of a group" sum: the own share of each expense (what others owe on it taken off, never below
- * zero), added per category in whole cents. The rows are the ones `budgetSpendingWhere` selects (see the loader).
+ * zero), minus the own share of each refund, added per category in whole cents. The rows are the ones `budgetSpendingWhere` selects (see the loader).
  */
 export function ownCentsByCategory(
-  rows: ReadonlyArray<{ id: string; categoryName: string | null; amount: { toNumber(): number } }>,
+  rows: ReadonlyArray<{ id: string; type?: string; isRefund?: boolean | null; categoryName: string | null; amount: { toNumber(): number } }>,
   theirShares: ReadonlyMap<string, Pick<TheirShare, 'theirCents'>>,
 ): Map<string | null, number> {
   const out = new Map<string | null, number>();
   for (const row of rows) {
-    const cents = ownAmountCents(storedToCents(row.amount), theirShares.get(row.id)?.theirCents ?? 0);
+    const cents = signedOwnCents(row, theirShares);
     out.set(row.categoryName, (out.get(row.categoryName) ?? 0) + cents);
   }
   return out;

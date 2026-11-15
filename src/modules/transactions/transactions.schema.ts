@@ -50,6 +50,7 @@ export const createTransactionSchema = z.object({
   attachmentUrl: z.string().max(500).optional(), // Pode ser URL ou identificador técnico (ex: invoice_pay:xxx:xxx)
   sourceRef: z.string().max(120).optional(), // Identificador de origem de importação (dedup exata / reimportação idempotente)
   competenceMonth: competenceMonthSchema.nullish(), // Mês de referência (INCOME/EXPENSE); null/omitido = mês da data
+  isRefund: z.boolean().optional(), // Estorno: receita que cancela uma despesa (só INCOME); não conta como receita
   // Split expense fields (only for EXPENSE transactions in shared households)
   isSplit: z.boolean().optional().default(false),
   splits: z.array(transactionSplitInputSchema).optional(), // Array of splits when isSplit is true
@@ -133,6 +134,7 @@ export const updateTransactionSchema = z.object({
   totalInstallments: z.number().int().positive().nullable().optional(),
   attachmentUrl: z.string().max(500).nullable().optional(), // Pode ser URL ou identificador técnico (ex: invoice_pay:xxx:xxx)
   competenceMonth: competenceMonthSchema.nullable().optional(), // Mês de referência; null limpa (volta ao mês da data)
+  isRefund: z.boolean().optional(), // Estorno (só INCOME)
 });
 
 export type UpdateTransactionInput = z.infer<typeof updateTransactionSchema>;

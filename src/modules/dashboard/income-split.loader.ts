@@ -21,10 +21,10 @@ function lastDayOf(month: string): string {
  * expenses only, by planning month, without card invoice payments), each by its own share. The same rows and the same
  * own-share rule the budget summary uses, so the split never disagrees with the budgets.
  */
-async function realizedByCategory(householdId: string, month: string): Promise<Map<string | null, number>> {
+export async function realizedByCategory(householdId: string, month: string): Promise<Map<string | null, number>> {
   const where = budgetSpendingWhere({ householdId, categoryName: GENERAL_BUDGET_CATEGORY, type: 'EXPENSE' }, monthOrRangeWhere({ month }));
   const [rows, theirShares] = await Promise.all([
-    prisma.transaction.findMany({ where, select: { id: true, categoryName: true, amount: true } }),
+    prisma.transaction.findMany({ where, select: { id: true, type: true, isRefund: true, categoryName: true, amount: true } }),
     loadTheirShares(prisma, householdId, where),
   ]);
   return ownCentsByCategory(rows, theirShares);

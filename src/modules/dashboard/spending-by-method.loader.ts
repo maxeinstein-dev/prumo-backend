@@ -3,7 +3,7 @@ import { GENERAL_BUDGET_CATEGORY } from '../../shared/enums/index.js';
 import { monthOrRangeWhere } from '../../shared/utils/competence.js';
 import { budgetSpendingWhere } from '../budgets/budget-spending.js';
 import { storedToCents } from '../people/money.js';
-import { loadTheirShares, ownAmountCents } from '../people/own-share.js';
+import { loadTheirShares, signedOwnCents } from '../people/own-share.js';
 import { dayString } from '../recurring-transactions/recurring-dates.js';
 import { addMonthKey } from '../transactions/credit-card-commitment.js';
 import { utcToday } from '../transactions/transactions.service.js';
@@ -49,13 +49,13 @@ function amounts(creditCents: number, otherCents: number): MethodAmounts {
 async function monthCents(householdId: string, month: string, creditIds: ReadonlySet<string>): Promise<{ credit: number; other: number }> {
   const where = budgetSpendingWhere({ householdId, categoryName: GENERAL_BUDGET_CATEGORY, type: 'EXPENSE' }, monthOrRangeWhere({ month }));
   const [rows, theirShares] = await Promise.all([
-    prisma.transaction.findMany({ where, select: { id: true, accountId: true, amount: true } }),
+    prisma.transaction.findMany({ where, select: { id: true, type: true, isRefund: true, accountId: true, amount: true } }),
     loadTheirShares(prisma, householdId, where),
   ]);
   let credit = 0;
   let other = 0;
   for (const row of rows) {
-    const cents = ownAmountCents(storedToCents(row.amount), theirShares.get(row.id)?.theirCents ?? 0);
+    const cents = signedOwnCents(row, theirShares);
     if (row.accountId && creditIds.has(row.accountId)) credit += cents;
     else other += cents;
   }

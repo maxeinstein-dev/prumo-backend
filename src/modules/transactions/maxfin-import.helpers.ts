@@ -122,6 +122,18 @@ function isReversedRow(row: MaxFinRow): boolean {
   return (row.section === 'income') !== (row.type === 'INCOME');
 }
 
+/** Credits of the card that are not a refund of a purchase: the payment of the invoice and the early-payment discount. */
+const NOT_A_REFUND_LABEL = /^(pagamento recebido|desconto antecipa)/;
+
+/**
+ * A sheet row is a refund (estorno) when a negative value reversed an expense block into a credit (INCOME in bills,
+ * credit or debit), except the card's "Pagamento recebido" and "Desconto Antecipação" credits. Income rows, even
+ * negative ones (an EXPENSE in the income block), are never refunds.
+ */
+export function isMaxFinRefundRow(row: { section: MaxFinSectionKey; type: 'INCOME' | 'EXPENSE'; description: string }): boolean {
+  return row.type === 'INCOME' && row.section !== 'income' && !NOT_A_REFUND_LABEL.test(normalizeLabel(row.description));
+}
+
 /**
  * One entry per distinct (type, normalized key), including the empty key so
  * the preview can show "sem categoria". Keeps the first-seen spelling, counts

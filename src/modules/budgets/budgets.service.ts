@@ -248,7 +248,7 @@ export async function getBudgetSummary(query: BudgetSummaryQuery) {
       // One definition of what counts, shared with the budget alerts (see budget-spending.ts)
       const transactions = await prisma.transaction.findMany({
         where: budgetSpendingWhere({ householdId, categoryName: budget.categoryName, type: budget.type }, periodWhere),
-        select: { amount: true },
+        select: { amount: true, isRefund: true },
       });
       const spending = sumSpending(transactions);
 
