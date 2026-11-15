@@ -568,6 +568,19 @@ describe('POST /captures: Gmail senders and duplicate e-mails', () => {
     expect(JSON.stringify(store.captures)).not.toContain('almoço');
   });
 
+  it('never stores an e-mail of a listed sender that no reader understands (promotion, invoice, statement)', async () => {
+    const token = await newToken();
+    const res = await post(token, { items: [
+      item({ package: GM, title: 'Mercado Pago', text: 'Sua fatura fechou. Saldo disponível R$ 1.234,56. CPF ***.123.456-**' }),
+      item({ package: GM, title: 'Google Pay', text: 'Novidades do Google Pay: até R$ 50,00 de volta.' }),
+      item({ package: GM, title: 'PagBank', text: 'Você recebeu um Pix de R$ 10,00.' }),
+      googlePay(),
+    ] });
+    expect(res.json().data.results.map((r: { status: string }) => r.status)).toEqual(['ignored', 'ignored', 'ignored', 'created']);
+    expect(store.captures).toHaveLength(1);
+    expect(JSON.stringify(store.captures)).not.toContain('fatura');
+  });
+
   it('dismisses the Google Pay e-mail that repeats the Mercado Pago outflow, in one batch or in two, in either order', async () => {
     const token = await newToken();
     await post(token, { items: [mpSent(), googlePay()] });

@@ -2,20 +2,13 @@ import { BRL, cleanMerchant, money, parseAnyPositiveCents, parsePositiveCents } 
 import type { AppParser } from './types.js';
 
 /**
- * Senders (the title of a Gmail notification) whose e-mails are read: Google Pay, Mercado Pago and banks (decided by
- * the user on 15/11/2026; XP left out until there are sample e-mails to read). The phone keeps the same list and drops every other e-mail before it is stored or sent; the
- * server refuses the others too (captures.service), so the preview of a personal e-mail is never kept. Compared without
- * case or extra spaces, as a whole name: "Inter" is a sender, "Internacional FC" is not.
+ * Senders (the title of a Gmail notification) whose e-mails are read: only the ones that have a reader, Google Pay and
+ * Mercado Pago (decided by the user on 15/11/2026, after the review: a bank enters this list together with its reader,
+ * written from sample e-mails). The phone keeps the same list and drops every other e-mail before it is stored or sent,
+ * and the server stores no e-mail that no reader understands (captures.service), so the text of a promotion, an invoice
+ * or a statement is never kept. Compared without case or extra spaces, as a whole name.
  */
-export const GMAIL_SENDERS = [
-  'Google Pay',
-  'Mercado Pago',
-  'Nubank',
-  'Inter',
-  'Banco Inter',
-  'PagBank',
-  'PagSeguro',
-] as const;
+export const GMAIL_SENDERS = ['Google Pay', 'Mercado Pago'] as const;
 
 const normalizeSender = (raw: string) => raw.replace(/\s+/g, ' ').trim().toLowerCase();
 const ALLOWED = new Set(GMAIL_SENDERS.map(normalizeSender));

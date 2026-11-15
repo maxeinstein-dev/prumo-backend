@@ -105,10 +105,14 @@ export async function ingestCaptures(
 ): Promise<CaptureResult[]> {
   const prepared = items.map((item) => {
     const postedAt = new Date(item.postedAt);
-    // An e-mail from anyone but Google Pay, Mercado Pago or a bank is never stored: the phone already drops it, and this
-    // keeps the preview of a personal e-mail out of the database even if a phone does not.
-    const ignored = item.package === GMAIL_PACKAGE && !isAllowedGmailSender(item.title ?? null);
-    const parsed = ignored ? null : parseCapture({ package: item.package, title: item.title ?? null, text: item.text });
+    // An e-mail is stored only when a reader understood it: one from another sender (the phone already drops it) or one
+    // of a listed sender that is not a transaction (a promotion, an invoice, a statement) is never kept, so its text,
+    // which may carry a balance or a document number, does not reach the database.
+    const isEmail = item.package === GMAIL_PACKAGE;
+    const parsed = isEmail && !isAllowedGmailSender(item.title ?? null)
+      ? null
+      : parseCapture({ package: item.package, title: item.title ?? null, text: item.text });
+    const ignored = isEmail && parsed === null;
     return { item, postedAt, parsed, ignored, dedupKey: computeDedupKey({ ...item, postedAt }) };
   });
 
