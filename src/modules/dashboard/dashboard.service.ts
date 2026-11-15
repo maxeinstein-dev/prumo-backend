@@ -1,12 +1,12 @@
 import { prisma } from '../../shared/db/prisma.js';
-import { parseMonthFilter, utcDayString } from '../../shared/utils/pagination.js';
-import { addMonths, effectiveMonthWhere } from '../../shared/utils/competence.js';
+import { parseMonthFilter } from '../../shared/utils/pagination.js';
+import { addMonths, effectiveMonth, effectiveMonthRangeWhere, effectiveMonthWhere } from '../../shared/utils/competence.js';
 import { deductionCents, loadTheirShares, ownAmountCents, type TheirShare } from '../people/own-share.js';
 import { forecastBatch } from '../recurring-transactions/recurring-forecast.js';
 import { TransactionType, CategoryType, GENERAL_BUDGET_CATEGORY, getCategoriesByType, getCategoryColor, CATEGORY_NAME_DISPLAY } from '../../shared/enums/index.js';
 import { isCustomCategoryName, toCustomCategoryName } from '../../shared/utils/categoryHelpers.js';
 import { budgetStatusOf } from '../budgets/budget-status.js';
-import { INVOICE_PAYMENT_PREFIX, NOT_INVOICE_PAYMENT } from '../budgets/budget-spending.js';
+import { NOT_INVOICE_PAYMENT } from '../budgets/budget-spending.js';
 import type {
   DashboardOverviewQuery,
   DashboardOverviewResponse,
@@ -42,7 +42,6 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
     previousMonthTransactions,
     budgets,
     recurringTransactionsRaw,
-    last6MonthsData,
     last12MonthsData,
     theirShares,
   ] = await Promise.all([
@@ -81,9 +80,7 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
         account: { select: { type: true } },
       },
     }),
-    // Last 6 months aggregated data for comparison
-    getMonthlyAggregates(householdId, 6, month),
-    // Last 12 months aggregated data for balance evolution
+    // Last 12 months aggregated data (balance evolution); the last 6 of them are the monthly comparison
     getMonthlyAggregates(householdId, 12, month),
     // What other people owe on the expenses of the month (one query over the shares only)
     loadTheirShares(prisma, householdId, { AND: [effectiveMonthWhere(month)] } as never),
@@ -116,7 +113,7 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
   const categoryBreakdown = calculateCategoryBreakdown(currentMonthTransactions, theirShares);
 
   // Monthly comparison (last 6 months)
-  const monthlyComparison = formatMonthlyComparison(last6MonthsData);
+  const monthlyComparison = formatMonthlyComparison(last12MonthsData.slice(-6));
 
   // Balance evolution (last 12 months)
   const balanceEvolution = formatBalanceEvolution(last12MonthsData);
@@ -136,7 +133,7 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
   );
 
   // Heatmap (daily spending)
-  const heatmap = await getHeatmapData(householdId, month);
+  const heatmap = buildHeatmap(month, currentMonthTransactions);
 
   return {
     summary,
@@ -347,53 +344,34 @@ async function getMonthlyAggregates(
   months: number,
   currentMonth: string,
 ): Promise<Array<{ month: string; income: number; expense: number }>> {
-  const [year, monthNum] = currentMonth.split('-').map(Number);
-  const results: Array<{ month: string; income: number; expense: number }> = [];
+  // Oldest to newest, the current month last
+  const monthList: string[] = [];
+  for (let i = months - 1; i >= 0; i--) monthList.push(addMonths(currentMonth, -i));
 
-  // Start from (months-1) months ago to include current month
-  for (let i = months - 1; i >= 0; i--) {
-    let targetYear = year;
-    let targetMonth = monthNum - i;
+  // One read for the whole window: the rows whose effective month is in it, bucketed by that month
+  const transactions = await prisma.transaction.findMany({
+    where: {
+      householdId,
+      AND: [effectiveMonthRangeWhere(monthList[0]!, currentMonth), NOT_INVOICE_PAYMENT],
+    },
+    select: { type: true, amount: true, date: true, competenceMonth: true },
+  });
 
-    while (targetMonth <= 0) {
-      targetMonth += 12;
-      targetYear -= 1;
+  const byMonth = new Map(monthList.map((m) => [m, { month: m, income: 0, expense: 0 }]));
+  for (const t of transactions) {
+    if (t.type === TransactionType.TRANSFER || t.type === TransactionType.ALLOCATION) continue;
+    const bucket = byMonth.get(effectiveMonth(t));
+    if (!bucket) continue;
+
+    const amount = t.amount.toNumber();
+    if (t.type === TransactionType.INCOME) {
+      bucket.income += amount;
+    } else if (t.type === TransactionType.EXPENSE) {
+      bucket.expense += Math.abs(amount);
     }
-
-    const monthStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}`;
-    const transactions = await prisma.transaction.findMany({
-      where: {
-        householdId,
-        AND: [effectiveMonthWhere(monthStr), NOT_INVOICE_PAYMENT],
-      },
-      select: {
-        type: true,
-        amount: true,
-      },
-    });
-
-    let income = 0;
-    let expense = 0;
-
-    for (const t of transactions) {
-      if (t.type === TransactionType.TRANSFER || t.type === TransactionType.ALLOCATION) continue;
-      
-      const amount = t.amount.toNumber();
-      if (t.type === TransactionType.INCOME) {
-        income += amount;
-      } else if (t.type === TransactionType.EXPENSE) {
-        expense += Math.abs(amount);
-      }
-    }
-
-    results.push({
-      month: monthStr,
-      income,
-      expense,
-    });
   }
 
-  return results;
+  return monthList.map((m) => byMonth.get(m)!);
 }
 
 /**
@@ -567,44 +545,27 @@ function calculateBudgetVsRealized(
 }
 
 /**
- * Get heatmap data for daily spending
+ * Heatmap of daily spending: the expenses the month already counts (reference month, no invoice payments), put on
+ * the calendar day of their date. A date whose day does not exist in the month (31 Oct with reference month Nov)
+ * goes to the last day, so the total is always the month's expense.
  */
-async function getHeatmapData(
-  householdId: string,
-  month: string
-): Promise<{ month: string; data: DashboardHeatmapDay[]; total: number; daysInMonth: number }> {
-  // First and last day as 'YYYY-MM-DD' text, so the comparison is by calendar day in any time zone
-  const { start: monthStart, end: monthEnd } = parseMonthFilter(month);
-  const daysInMonth = monthEnd.getUTCDate();
-
-  // Use raw SQL for efficient aggregation
-  const dailySpending = await prisma.$queryRaw<Array<{ day: number; amount: string }>>`
-    SELECT 
-      EXTRACT(DAY FROM date)::integer as day,
-      SUM(ABS(amount))::text as amount
-    FROM "transactions"
-    WHERE "household_id" = ${householdId}::uuid
-      AND date >= ${utcDayString(monthStart)}::date
-      AND date <= ${utcDayString(monthEnd)}::date
-      AND type = 'EXPENSE'
-      AND ("attachment_url" IS NULL OR "attachment_url" NOT LIKE ${INVOICE_PAYMENT_PREFIX + '%'})
-    GROUP BY EXTRACT(DAY FROM date)
-    ORDER BY day
-  `;
-
-  const spendingMap = new Map<number, number>();
-  for (const row of dailySpending) {
-    spendingMap.set(row.day, parseFloat(row.amount));
+function buildHeatmap(
+  month: string,
+  transactions: ReadonlyArray<{ type: string; amount: { toNumber(): number }; date: Date }>,
+): { month: string; data: DashboardHeatmapDay[]; total: number; daysInMonth: number } {
+  const daysInMonth = parseMonthFilter(month).end.getUTCDate();
+  const cents = new Array<number>(daysInMonth + 1).fill(0);
+  for (const t of transactions) {
+    if (t.type !== TransactionType.EXPENSE) continue;
+    const day = Math.min(t.date.getUTCDate(), daysInMonth);
+    cents[day]! += Math.round(Math.abs(t.amount.toNumber()) * 100);
   }
 
   const data: DashboardHeatmapDay[] = [];
-  let total = 0;
-
+  let totalCents = 0;
   for (let day = 1; day <= daysInMonth; day++) {
-    const amount = spendingMap.get(day) || 0;
-    data.push({ day, amount });
-    total += amount;
+    data.push({ day, amount: cents[day]! / 100 });
+    totalCents += cents[day]!;
   }
-
-  return { month, data, total, daysInMonth };
+  return { month, data, total: totalCents / 100, daysInMonth };
 }
