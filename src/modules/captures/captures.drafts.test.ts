@@ -31,6 +31,11 @@ const matches = (row: Row, where: Row): boolean =>
     if (cond && typeof cond === 'object' && !(cond instanceof Date)) {
       if ('in' in cond) return (cond as { in: unknown[] }).in.includes(row[key]);
       if ('lt' in cond) return typeof row[key] === 'number' && (row[key] as number) < (cond as { lt: number }).lt;
+      if ('gte' in cond || 'lte' in cond) {
+        const value = row[key] instanceof Date ? (row[key] as Date).getTime() : NaN;
+        const { gte, lte } = cond as { gte?: Date; lte?: Date };
+        return (!gte || value >= gte.getTime()) && (!lte || value <= lte.getTime());
+      }
       return false;
     }
     return (row[key] ?? null) === cond;
@@ -800,6 +805,22 @@ describe('POST /captures/reparse', () => {
   const NU = 'com.nu.production';
   const purchaseText = 'Compra de R$ 37,50 APROVADA em PADARIA ZETA para o cartão com final 1234.';
   const limitText = 'Agora você pode enviar até R$ 80.000,00 via Pix, TED e boleto de dia.';
+
+  it('after reading again, dismisses the e-mail that repeats a Pix the older reader did not understand', async () => {
+    const MP = 'com.mercadopago.wallet';
+    const GM = 'com.google.android.gm';
+    addCapture(1, { package: MP, title: 'Seu Pix foi enviado', text: 'O Pix de R$ 10.00 foi feito para MARIA FICTICIA, CPF: ∗∗∗.123.456-∗∗.', parserVersion: 4 });
+    addCapture(2, {
+      package: GM, title: 'Google Pay', text: 'Seu Pix de R$10,00 no Google Pay foi realizado com sucesso.', parserVersion: PARSER_VERSION,
+      parsed: { kind: 'WALLET_PIX_OUT', type: 'EXPENSE', amountCents: 1000, amount: 10, method: 'PIX', description: 'Pix pelo Google Pay' },
+    });
+
+    expect((await postTo('/captures/reparse')).statusCode).toBe(200);
+
+    const byId = Object.fromEntries(store.captures.map((c) => [c.id, c]));
+    expect(byId[capId(1)]).toMatchObject({ status: 'PENDING', parsed: { kind: 'PIX_OUT', amountCents: 1000 } });
+    expect(byId[capId(2)]).toMatchObject({ status: 'DISMISSED', parsed: { duplicateOf: capId(1) } });
+  });
 
   it('reads the PENDING captures read by an older parser (or never read) and stores the result', async () => {
     addCapture(1, { package: NU, title: 'Compra no crédito aprovada', text: purchaseText });
