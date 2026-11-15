@@ -10,6 +10,7 @@ import {
   seedPerson,
   seedSettlement,
   seedEmployment,
+  seedDefaultShareRule,
   seedShare,
   seedTransaction,
 } from './__fixtures__/people-fake-db.js';
@@ -172,6 +173,15 @@ describe('people: create, list, update, delete', () => {
     expect(rowsOf('person')).toHaveLength(2);
     expect(rowsOf('transactionShare')).toHaveLength(1);
     expect(rowsOf('settlement')).toHaveLength(1);
+  });
+
+  it('only deactivates a person who is in the default split of a recurrence (the rule is not cascaded away) (P19)', async () => {
+    const mae = await createPerson({ householdId: HH, name: 'Mae Teste' });
+    seedDefaultShareRule({ householdId: HH, recurringTransactionId: 'rec-1', personId: mae.id, percent: 100 });
+
+    expect(await deletePerson(HH, mae.id)).toEqual({ deleted: false, person: expect.objectContaining({ id: mae.id, isActive: false }) });
+    expect(rowsOf('person')).toHaveLength(1);
+    expect(rowsOf('recurringTransactionShare')).toHaveLength(1);
   });
 });
 

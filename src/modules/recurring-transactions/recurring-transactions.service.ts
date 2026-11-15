@@ -386,7 +386,14 @@ export async function updateRecurringTransaction(
 
   // P19: null clears the default split, a list replaces it, omitted keeps it
   const newDefaultShares = input.defaultShares === undefined ? undefined : input.defaultShares ?? [];
-  if (newDefaultShares) await assertDefaultSharesUsable(prisma, householdId, newDefaultShares);
+  if (newDefaultShares) {
+    // A person deactivated after joining the split may stay in it (an edit of another field resends the stored split)
+    const stored = await prisma.recurringTransactionShare.findMany({
+      where: { householdId, recurringTransactionId: recurringId },
+      select: { personId: true },
+    });
+    await assertDefaultSharesUsable(prisma, householdId, newDefaultShares, new Set(stored.map((s) => s.personId)));
+  }
 
   const recurring = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
   await lockCustomCategory(tx, householdId, input.categoryName);

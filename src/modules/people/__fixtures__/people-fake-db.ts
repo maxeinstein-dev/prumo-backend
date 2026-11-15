@@ -30,6 +30,8 @@ const SPECS: Record<string, TableSpec> = {
   },
   settlement: { unique: [['transactionId']], parents: { personId: 'person' }, defaults: () => ({ transactionId: null, note: null }) },
   employment: { unique: [], parents: {}, defaults: () => ({ personId: null }) },
+  // P19: the default split of a recurrence (cascades with the person, like the real foreign key)
+  recurringTransactionShare: { unique: [['recurringTransactionId', 'personId']], parents: {}, defaults: () => ({ percent: null, amount: null }) },
   account: { unique: [], parents: {}, defaults: () => ({ balance: 0, isActive: true, type: 'CHECKING' }) },
   category: { unique: [], parents: {}, defaults: () => ({}) },
 };
@@ -166,6 +168,7 @@ function removeRows(name: string, doomed: Row[]): void {
     store.personAlias = store.personAlias!.filter((r) => !ids.has(r.personId as string));
     store.transactionShare = store.transactionShare!.filter((r) => !ids.has(r.personId as string));
     store.settlement = store.settlement!.filter((r) => !ids.has(r.personId as string));
+    store.recurringTransactionShare = store.recurringTransactionShare!.filter((r) => !ids.has(r.personId as string));
   }
 }
 
@@ -242,6 +245,7 @@ export const fakePrisma = {
   transactionShare: table('transactionShare'),
   settlement: table('settlement'),
   employment: table('employment'),
+  recurringTransactionShare: table('recurringTransactionShare'),
   account: table('account'),
   category: table('category'),
   /** The two row-lock reads the module makes (`SELECT ... FOR UPDATE`); no real locking, tests hook the call. */
@@ -382,6 +386,12 @@ export function seedSettlement(data: {
 export function seedEmployment(data: { householdId: string; personId: string | null }): Row {
   const row = build('employment', data);
   store.employment!.push(row);
+  return row;
+}
+
+export function seedDefaultShareRule(data: { householdId: string; recurringTransactionId: string; personId: string; percent?: number | null; amount?: number | null }): Row {
+  const row = build('recurringTransactionShare', data);
+  store.recurringTransactionShare!.push(row);
   return row;
 }
 

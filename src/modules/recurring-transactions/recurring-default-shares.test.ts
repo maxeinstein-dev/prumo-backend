@@ -162,6 +162,16 @@ describe('default split on the recurrence itself (P19 L1)', () => {
     expect(cleared.defaultShares).toEqual([]);
   });
 
+  it('an edit that resends the stored split keeps working after its person was deactivated, a new inactive person is still refused', async () => {
+    const created = await createRecurringTransaction({ ...base, defaultShares: [{ personId: MAE, percent: 100 }] } as never);
+    rowsOf('person').find((p) => p.id === MAE)!.isActive = false;
+    const edited = await updateRecurringTransaction(created.id, HH, { amount: 210, defaultShares: [{ personId: MAE, percent: 100 }] } as never);
+    expect(edited.amount).toBe(210);
+    expect(rowsOf('recurringTransactionShare')).toEqual([expect.objectContaining({ personId: MAE, percent: 100 })]);
+    // GONE was never in this split: still refused
+    await expect(updateRecurringTransaction(created.id, HH, { defaultShares: [{ personId: GONE, percent: 50 }] } as never)).rejects.toThrow(/inactive/);
+  });
+
   it('refuses an inactive person or one of another household, saving nothing', async () => {
     await expect(createRecurringTransaction({ ...base, defaultShares: [{ personId: GONE, percent: 50 }] } as never)).rejects.toThrow(/inactive/);
     await expect(createRecurringTransaction({ ...base, defaultShares: [{ personId: '55555555-5555-4555-8555-555555555555', percent: 50 }] } as never)).rejects.toThrow(/Person/);
