@@ -55,14 +55,14 @@ describe('Mercado Pago: Pix sent, notified by the app', () => {
 });
 
 describe('Gmail: which senders are read', () => {
-  it('accepts Google Pay, Mercado Pago and the bank senders, in any case and spacing', () => {
-    for (const s of ['Google Pay', ' google pay ', 'Mercado Pago', 'Inter', 'Banco Inter', 'PagBank', 'PagSeguro', 'Nubank']) {
+  it('accepts only the senders that have a reader: Google Pay and Mercado Pago, in any case and spacing', () => {
+    for (const s of ['Google Pay', ' google pay ', 'Mercado Pago', 'MERCADO PAGO']) {
       expect(isAllowedGmailSender(s), s).toBe(true);
     }
   });
 
-  it('refuses anyone else, a grouped notification and a missing title', () => {
-    for (const s of ['Maria Silva', 'XP Investimentos', 'XP', 'Internacional FC', '2 novas mensagens', 'Google', 'Pay', '', null]) {
+  it('refuses anyone else, the banks without a reader, a grouped notification and a missing title', () => {
+    for (const s of ['Maria Silva', 'XP Investimentos', 'XP', 'Nubank', 'Inter', 'Banco Inter', 'PagBank', 'PagSeguro', 'Internacional FC', '2 novas mensagens', 'Google', 'Pay', '', null]) {
       expect(isAllowedGmailSender(s), String(s)).toBe(false);
     }
   });
@@ -88,7 +88,7 @@ describe('Gmail: Pix paid with Google Pay', () => {
     expect(parseCapture({ package: GM, title: 'Maria Silva', text: text('10,00') })).toBeNull();
   });
 
-  it('leaves a bank sender without a reader as not understood', () => {
+  it('reads nothing from a bank sender without a reader', () => {
     expect(parseCapture({ package: GM, title: 'PagBank', text: 'Você recebeu um Pix de R$ 10,00.' })).toBeNull();
   });
 });
