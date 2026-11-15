@@ -119,7 +119,7 @@ describe('loadPurchaseSimulation: what is already committed', () => {
     tx({ amount: -40, date: '2026-11-28', competenceMonth: '2026-12' }); // November date, December in the plan
     tx({ amount: -999, date: '2026-12-05', attachmentUrl: 'invoice_pay:card:2026-11' }); // payment of the invoice: not spending
     tx({ type: 'INCOME', categoryName: 'SALARY', amount: 5000, date: '2026-12-05' }); // income is not committed spending
-    store.recurrences.push({ id: 'rec-1', categoryName: 'HOUSING' });
+    store.recurrences.push({ id: 'rec-1', categoryName: 'HOUSING' }, { id: 'rec-salary', categoryName: 'SALARY' });
     store.events.push({ date: '2026-12-10', amountCents: -80000, sourceId: 'rec-1' });
     store.events.push({ date: '2026-12-10', amountCents: 300000, sourceId: 'rec-salary' }); // income event: not an expense
     const r = await sim({ installments: 2 });
