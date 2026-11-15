@@ -222,12 +222,12 @@ describe('dashboard overview: ownExpense and ownSpent', () => {
     expect(o.budgetVsRealized.find((b) => b.category === 'GENERAL')).toMatchObject({ spent: 200, ownSpent: 60 });
   });
 
-  it('card transactions stay out, as in the rest of the overview, and so do their shares', async () => {
+  it('card transactions count (accrual, like the budgets), and so do their shares', async () => {
     budget();
     share(tx({ amount: -100, accountType: 'CREDIT', accountId: 'card' }), 40);
     tx({ amount: -20 });
     const o = await overview();
-    expect(o.categoryBreakdown[0]).toMatchObject({ expense: 20, ownExpense: 20 });
+    expect(o.categoryBreakdown[0]).toMatchObject({ expense: 120, ownExpense: 80 });
   });
 
   it('installments, the other direction and another household', async () => {
