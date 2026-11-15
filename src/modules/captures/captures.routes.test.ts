@@ -583,6 +583,17 @@ describe('POST /captures: Gmail senders and duplicate e-mails', () => {
     expect(store.captures.find((c) => c.package === GM)).toMatchObject({ status: 'DISMISSED', parsed: { duplicateOf: store.captures.find((c) => c.package === MP)!.id } });
   });
 
+  it('does not dismiss again an e-mail the user restored when an unrelated outflow arrives later', async () => {
+    const token = await newToken();
+    await post(token, { items: [mpSent(), googlePay()] });
+    const mail = store.captures.find((c) => c.package === GM)!;
+    expect(mail.status).toBe('DISMISSED');
+    mail.status = 'PENDING'; // the user restored it
+
+    await post(token, { items: [mpSent({ text: 'O Pix de R$ 25.00 foi feito para JOAO FICTICIO.', postedAt: '2026-11-15T12:05:00.000Z' })] });
+    expect(mail.status).toBe('PENDING');
+  });
+
   it('keeps an e-mail of another amount, of more than ten minutes later, or of another household', async () => {
     const token = await newToken();
     await post(token, { items: [mpSent(), googlePay({ text: 'Seu Pix de R$11,00 no Google Pay foi realizado com sucesso.' }), googlePay({ postedAt: '2026-11-15T12:11:00.000Z' })] });
