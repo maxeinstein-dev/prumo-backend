@@ -144,3 +144,21 @@ export const incomeSplitQuerySchema = z.object({
   householdId: z.string().uuid().optional(),
   month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'month must be YYYY-MM'),
 });
+
+/**
+ * POST /dashboard/purchase-simulation: a purchase to look at, nothing is saved. The amount is in reais with at most 2
+ * decimals and must leave at least one cent per installment; the first month defaults from the card's closing day.
+ */
+export const purchaseSimulationBodySchema = z
+  .object({
+    householdId: z.string().uuid().optional(),
+    totalAmount: z.number().finite().positive().max(1_000_000_000),
+    installments: z.number().int().min(1).max(24),
+    firstMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'firstMonth must be YYYY-MM').optional(),
+    accountId: z.string().uuid().optional(),
+    categoryName: z.string().min(1).max(60).optional(),
+  })
+  .refine((b) => Math.abs(b.totalAmount * 100 - Math.round(b.totalAmount * 100)) < 1e-6, { message: 'totalAmount must have at most 2 decimal places', path: ['totalAmount'] })
+  .refine((b) => Math.round(b.totalAmount * 100) >= b.installments, { message: 'totalAmount is too small for that many installments', path: ['totalAmount'] });
+
+export type PurchaseSimulationBody = z.infer<typeof purchaseSimulationBodySchema>;
