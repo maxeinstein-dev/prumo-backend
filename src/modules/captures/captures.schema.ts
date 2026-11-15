@@ -78,6 +78,18 @@ export const confirmCaptureSchema = z.object({
   }).strict().optional(),
 }).strict();
 
+/** POST /captures/transfer: an outflow and an own income of the same Pix, confirmed as one transfer. */
+export const confirmTransferSchema = z.object({
+  outCaptureId: z.string().uuid(),
+  inCaptureId: z.string().uuid(),
+  fromAccountId: z.string().uuid(),
+  toAccountId: z.string().uuid(),
+  amount: z.coerce.number().positive('Amount must be positive'),
+  date: localDateSchema,
+  description: z.string().max(255).optional(),
+}).strict();
+export type ConfirmTransferInput = z.infer<typeof confirmTransferSchema>;
+
 export const accountRuleSchema = z.object({
   package: z.string().min(1, 'package is required').max(150).refine(noNul, NUL_MESSAGE),
   kind: z.enum(CAPTURE_KINDS),
