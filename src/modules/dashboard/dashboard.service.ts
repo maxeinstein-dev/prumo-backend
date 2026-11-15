@@ -3,9 +3,10 @@ import { parseMonthFilter, utcDayString } from '../../shared/utils/pagination.js
 import { addMonths, effectiveMonthWhere } from '../../shared/utils/competence.js';
 import { deductionCents, loadTheirShares, ownAmountCents, type TheirShare } from '../people/own-share.js';
 import { forecastBatch } from '../recurring-transactions/recurring-forecast.js';
-import { AccountType, TransactionType, CategoryType, GENERAL_BUDGET_CATEGORY, getCategoriesByType, getCategoryColor, CATEGORY_NAME_DISPLAY } from '../../shared/enums/index.js';
+import { TransactionType, CategoryType, GENERAL_BUDGET_CATEGORY, getCategoriesByType, getCategoryColor, CATEGORY_NAME_DISPLAY } from '../../shared/enums/index.js';
 import { isCustomCategoryName, toCustomCategoryName } from '../../shared/utils/categoryHelpers.js';
 import { budgetStatusOf } from '../budgets/budget-status.js';
+import { INVOICE_PAYMENT_PREFIX, NOT_INVOICE_PAYMENT } from '../budgets/budget-spending.js';
 import type {
   DashboardOverviewQuery,
   DashboardOverviewResponse,
@@ -33,18 +34,8 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
     ? `${year - 1}-12` 
     : `${year}-${String(monthNum - 1).padStart(2, '0')}`;
 
-  // Get credit card IDs to exclude. This set is only ever used to EXCLUDE credit
-  // card transactions from bank income/expense figures, so it must include inactive
-  // cards too: otherwise a deactivated card's transactions would be dropped by
-  // calculateSummary (which also checks account.type === CREDIT) but still counted by
-  // getMonthlyAggregates/heatmap (which only filter by accountId), making the widgets
-  // disagree with each other.
-  const creditCardAccounts = await prisma.account.findMany({
-    where: { householdId, type: AccountType.CREDIT },
-    select: { id: true },
-  });
-  const creditCardIds = new Set(creditCardAccounts.map(a => a.id));
-
+  // Accrual, like the budgets (budgetSpendingWhere): a card purchase counts in its own month and the payment of a
+  // card invoice does not count (the purchases already did). So no account is left out here.
   // Fetch all data in parallel
   const [
     currentMonthTransactions,
@@ -60,7 +51,7 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
       where: {
         householdId,
         // Planning month: reference month when set, else the month of the date
-        AND: [effectiveMonthWhere(month)],
+        AND: [effectiveMonthWhere(month), NOT_INVOICE_PAYMENT],
       },
       include: {
         account: { select: { type: true } },
@@ -70,7 +61,7 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
     prisma.transaction.findMany({
       where: {
         householdId,
-        AND: [effectiveMonthWhere(prevMonth)],
+        AND: [effectiveMonthWhere(prevMonth), NOT_INVOICE_PAYMENT],
       },
       include: {
         account: { select: { type: true } },
@@ -91,9 +82,9 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
       },
     }),
     // Last 6 months aggregated data for comparison
-    getMonthlyAggregates(householdId, 6, month, creditCardIds),
+    getMonthlyAggregates(householdId, 6, month),
     // Last 12 months aggregated data for balance evolution
-    getMonthlyAggregates(householdId, 12, month, creditCardIds),
+    getMonthlyAggregates(householdId, 12, month),
     // What other people owe on the expenses of the month (one query over the shares only)
     loadTheirShares(prisma, householdId, { AND: [effectiveMonthWhere(month)] } as never),
   ]);
@@ -112,17 +103,17 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
   }));
 
   // Calculate summary
-  const summary = calculateSummary(currentMonthTransactions, creditCardIds);
-  const previousSummary = calculateSummary(previousMonthTransactions, creditCardIds);
+  const summary = calculateSummary(currentMonthTransactions);
+  const previousSummary = calculateSummary(previousMonthTransactions);
 
   // Calculate trend
   const trend = calculateTrend(summary, previousSummary);
 
   // Calculate forecast (based on last month + recurring)
-  const forecast = calculateForecast(previousSummary, recurringTransactions, creditCardIds);
+  const forecast = calculateForecast(previousSummary, recurringTransactions);
 
   // Calculate category breakdown
-  const categoryBreakdown = calculateCategoryBreakdown(currentMonthTransactions, creditCardIds, theirShares);
+  const categoryBreakdown = calculateCategoryBreakdown(currentMonthTransactions, theirShares);
 
   // Monthly comparison (last 6 months)
   const monthlyComparison = formatMonthlyComparison(last6MonthsData);
@@ -133,8 +124,7 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
   // Fixed vs Variable
   const fixedVsVariable = calculateFixedVsVariable(
     currentMonthTransactions,
-    recurringTransactions,
-    creditCardIds
+    recurringTransactions
   );
 
   // Budget vs Realized
@@ -142,12 +132,11 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
     budgets,
     currentMonthTransactions,
     summary,
-    creditCardIds,
     theirShares
   );
 
   // Heatmap (daily spending)
-  const heatmap = await getHeatmapData(householdId, month, creditCardIds);
+  const heatmap = await getHeatmapData(householdId, month);
 
   return {
     summary,
@@ -171,8 +160,7 @@ function calculateSummary(
     amount: { toNumber: () => number } | number;
     accountId: string | null;
     account: { type: string } | null;
-  }>,
-  creditCardIds: Set<string>
+  }>
 ): DashboardSummary {
   let totalIncome = 0;
   let totalExpense = 0;
@@ -180,14 +168,6 @@ function calculateSummary(
   for (const t of transactions) {
     // Exclude transfers and allocations
     if (t.type === TransactionType.TRANSFER || t.type === TransactionType.ALLOCATION) {
-      continue;
-    }
-
-    // Exclude credit card transactions
-    if (t.accountId && creditCardIds.has(t.accountId)) {
-      continue;
-    }
-    if (t.account && t.account.type === AccountType.CREDIT) {
       continue;
     }
 
@@ -247,18 +227,14 @@ function calculateForecast(
     accountId: string | null;
     account: { type: string } | null;
     frequency?: string;
-  }>,
-  creditCardIds: Set<string>
+  }>
 ): DashboardForecast {
   // Base prediction on previous month
   let predictedIncome = previousSummary.totalIncome;
   let predictedExpense = previousSummary.totalExpense;
 
-  // Add recurring transactions (filtering out credit cards)
+  // Add recurring transactions (a recurrence on a card is spending too)
   for (const rt of recurringTransactions) {
-    if (rt.accountId && creditCardIds.has(rt.accountId)) continue;
-    if (rt.account && rt.account.type === AccountType.CREDIT) continue;
-
     const amount = rt.expectedAmount ?? (typeof rt.amount === 'number' ? rt.amount : rt.amount.toNumber());
     // For periodic transactions (e.g. BIWEEKLY salary), the per-occurrence amount
     // needs to be multiplied by the number of occurrences that fall in a month
@@ -328,7 +304,6 @@ function calculateCategoryBreakdown(
     account: { type: string } | null;
     id?: string;
   }>,
-  creditCardIds: Set<string>,
   theirShares: ReadonlyMap<string, TheirShare> = new Map()
 ): CategoryBreakdown[] {
   const categoryMap = new Map<string, { income: number; expense: number; ownExpense: number }>();
@@ -336,8 +311,6 @@ function calculateCategoryBreakdown(
   for (const t of transactions) {
     if (!t.categoryName) continue;
     if (t.type === TransactionType.TRANSFER || t.type === TransactionType.ALLOCATION) continue;
-    if (t.accountId && creditCardIds.has(t.accountId)) continue;
-    if (t.account && t.account.type === AccountType.CREDIT) continue;
 
     const amount = typeof t.amount === 'number' ? t.amount : t.amount.toNumber();
     
@@ -373,7 +346,6 @@ async function getMonthlyAggregates(
   householdId: string,
   months: number,
   currentMonth: string,
-  creditCardIds: Set<string>
 ): Promise<Array<{ month: string; income: number; expense: number }>> {
   const [year, monthNum] = currentMonth.split('-').map(Number);
   const results: Array<{ month: string; income: number; expense: number }> = [];
@@ -392,10 +364,7 @@ async function getMonthlyAggregates(
     const transactions = await prisma.transaction.findMany({
       where: {
         householdId,
-        AND: [effectiveMonthWhere(monthStr)],
-        NOT: {
-          accountId: { in: Array.from(creditCardIds) },
-        },
+        AND: [effectiveMonthWhere(monthStr), NOT_INVOICE_PAYMENT],
       },
       select: {
         type: true,
@@ -476,8 +445,7 @@ function calculateFixedVsVariable(
     account: { type: string } | null;
     recurringTransactionId: string | null;
   }>,
-  recurringTransactions: Array<{ id: string }>,
-  creditCardIds: Set<string>
+  recurringTransactions: Array<{ id: string }>
 ): FixedVsVariable {
   const recurringIds = new Set(recurringTransactions.map(rt => rt.id));
   
@@ -486,8 +454,6 @@ function calculateFixedVsVariable(
 
   for (const t of transactions) {
     if (t.type !== TransactionType.EXPENSE) continue;
-    if (t.accountId && creditCardIds.has(t.accountId)) continue;
-    if (t.account && t.account.type === AccountType.CREDIT) continue;
 
     const amount = Math.abs(typeof t.amount === 'number' ? t.amount : t.amount.toNumber());
 
@@ -526,7 +492,6 @@ function calculateBudgetVsRealized(
     id?: string;
   }>,
   summary: DashboardSummary,
-  creditCardIds: Set<string>,
   theirShares: ReadonlyMap<string, TheirShare> = new Map()
 ): BudgetVsRealized[] {
   // Calculate spending by category
@@ -538,8 +503,6 @@ function calculateBudgetVsRealized(
   for (const t of transactions) {
     if (!t.categoryName) continue;
     if (t.type === TransactionType.TRANSFER || t.type === TransactionType.ALLOCATION) continue;
-    if (t.accountId && creditCardIds.has(t.accountId)) continue;
-    if (t.account && t.account.type === AccountType.CREDIT) continue;
 
     const amount = Math.abs(typeof t.amount === 'number' ? t.amount : t.amount.toNumber());
 
@@ -558,8 +521,6 @@ function calculateBudgetVsRealized(
     // Same set as calculateSummary (the General budget counts every expense, with or without category)
     for (const t of transactions) {
       if (t.type !== TransactionType.EXPENSE) continue;
-      if (t.accountId && creditCardIds.has(t.accountId)) continue;
-      if (t.account && t.account.type === AccountType.CREDIT) continue;
       ownTotalExpense += ownExpenseOf(t, typeof t.amount === 'number' ? t.amount : t.amount.toNumber(), theirShares);
     }
   }
@@ -610,14 +571,11 @@ function calculateBudgetVsRealized(
  */
 async function getHeatmapData(
   householdId: string,
-  month: string,
-  creditCardIds: Set<string>
+  month: string
 ): Promise<{ month: string; data: DashboardHeatmapDay[]; total: number; daysInMonth: number }> {
   // First and last day as 'YYYY-MM-DD' text, so the comparison is by calendar day in any time zone
   const { start: monthStart, end: monthEnd } = parseMonthFilter(month);
   const daysInMonth = monthEnd.getUTCDate();
-
-  const creditCardIdsArray = Array.from(creditCardIds);
 
   // Use raw SQL for efficient aggregation
   const dailySpending = await prisma.$queryRaw<Array<{ day: number; amount: string }>>`
@@ -629,10 +587,7 @@ async function getHeatmapData(
       AND date >= ${utcDayString(monthStart)}::date
       AND date <= ${utcDayString(monthEnd)}::date
       AND type = 'EXPENSE'
-      AND (
-        "account_id" IS NULL 
-        OR "account_id" NOT IN (SELECT unnest(${creditCardIdsArray}::uuid[]))
-      )
+      AND ("attachment_url" IS NULL OR "attachment_url" NOT LIKE ${INVOICE_PAYMENT_PREFIX + '%'})
     GROUP BY EXTRACT(DAY FROM date)
     ORDER BY day
   `;

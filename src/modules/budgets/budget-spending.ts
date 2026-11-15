@@ -14,7 +14,7 @@ import { deductionCents, type TheirShare } from '../people/own-share.js';
  * card already count on their own dates, so the payment would count the same money twice.
  */
 export const INVOICE_PAYMENT_PREFIX = 'invoice_pay:';
-const NOT_INVOICE_PAYMENT = { OR: [{ attachmentUrl: null }, { NOT: { attachmentUrl: { startsWith: INVOICE_PAYMENT_PREFIX } } }] };
+export const NOT_INVOICE_PAYMENT = { OR: [{ attachmentUrl: null }, { NOT: { attachmentUrl: { startsWith: INVOICE_PAYMENT_PREFIX } } }] };
 
 export function budgetSpendingWhere(
   budget: { householdId: string | undefined; categoryName: string; type: string },
