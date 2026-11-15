@@ -10,7 +10,7 @@ import { buildCategoryHints, type CategoryHints } from './capture-category.js';
 import { buildSuggestion, suggestedPlace, type SuggestionCardRule, type SuggestionRule } from './capture-suggestion.js';
 import { PARSER_VERSION, parseCapture, type ParsedCapture } from './parsers/index.js';
 import { isAllowedGmailSender } from './parsers/gmail.js';
-import { DUPLICATE_WINDOW_MS, GMAIL_PACKAGE, duplicateEmails, isAppOutflow, isEmailOutflow } from './capture-duplicates.js';
+import { DUPLICATE_WINDOW_MS, GMAIL_PACKAGE, duplicatesToDismiss, isAppOutflow, isEmailOutflow } from './capture-duplicates.js';
 import type { AccountRuleInput, CaptureItemInput, CaptureStatusValue, CardRuleInput, ConfirmCaptureInput } from './captures.schema.js';
 
 /** A notice is dismissed (decided 13/11/2026; "restore" brings it back); anything else waits for the user. */
@@ -36,19 +36,27 @@ export interface CaptureResult {
   notice?: CaptureNotice;
 }
 
+/** A stored capture as the duplicate pass sees it (from the request, or from a reparse). */
+interface FreshCapture {
+  dedupKey: string;
+  postedAt: Date;
+  package: string;
+  parsed: unknown;
+}
+
 /**
- * After new captures are stored: an e-mail outflow that repeats an app outflow (same amount, at most ten minutes apart)
- * is dismissed, with `duplicateOf` in its reading so the screen can say why (see capture-duplicates.ts). Only pairs that
- * involve a capture of this request are acted on, so an e-mail the user restored is not dismissed again by an unrelated
- * upload. Returns the dedup keys of the e-mails it dismissed.
+ * After captures are stored or re-read: of an e-mail and a Mercado Pago app notification of the same Pix (see
+ * capture-duplicates.ts), the e-mail is dismissed, or the app notification when the e-mail was already confirmed; the
+ * dismissed one carries `duplicateOf` in its reading so the screen can say why. Only pairs that involve one of `fresh`
+ * are acted on, so a capture the user restored is not dismissed again by an unrelated upload.
+ *
+ * Returns the dedup keys of `fresh` that must not raise a phone notice: the ones dismissed, and the ones whose twin
+ * arrived earlier (that twin already raised the notice for this Pix).
  */
-async function dismissDuplicateEmails(
-  householdId: string,
-  fresh: ReadonlyArray<{ dedupKey: string; postedAt: Date; item: { package: string }; parsed: ParsedCapture | null }>,
-): Promise<Set<string>> {
-  const out = new Set<string>();
-  const relevant = fresh.filter((e) => isEmailOutflow({ package: e.item.package, parsed: e.parsed }) || isAppOutflow({ package: e.item.package, parsed: e.parsed }));
-  if (relevant.length === 0) return out;
+async function dismissDuplicates(householdId: string, fresh: readonly FreshCapture[]): Promise<Set<string>> {
+  const silenced = new Set<string>();
+  const relevant = fresh.filter((e) => isEmailOutflow(e) || isAppOutflow(e));
+  if (relevant.length === 0) return silenced;
   const times = relevant.map((e) => e.postedAt.getTime());
   const window = await prisma.capturedNotification.findMany({
     where: {
@@ -59,18 +67,21 @@ async function dismissDuplicateEmails(
   });
   const freshKeys = new Set(relevant.map((e) => e.dedupKey));
   const byId = new Map(window.map((c) => [c.id, c]));
-  for (const pair of duplicateEmails(window)) {
-    const email = byId.get(pair.id)!;
-    const app = byId.get(pair.duplicateOf)!;
-    if (!freshKeys.has(email.dedupKey) && !freshKeys.has(app.dedupKey)) continue;
-    const reading = (email.parsed ?? {}) as Prisma.InputJsonObject;
+  for (const pair of duplicatesToDismiss(window)) {
+    const dropped = byId.get(pair.id)!;
+    const kept = byId.get(pair.duplicateOf)!;
+    if (!freshKeys.has(dropped.dedupKey) && !freshKeys.has(kept.dedupKey)) continue;
+    const reading = (dropped.parsed ?? {}) as Prisma.InputJsonObject;
     const { count } = await prisma.capturedNotification.updateMany({
-      where: { id: email.id, householdId, status: 'PENDING' },
-      data: { status: 'DISMISSED', parsed: { ...reading, duplicateOf: app.id } },
+      where: { id: dropped.id, householdId, status: 'PENDING' },
+      data: { status: 'DISMISSED', parsed: { ...reading, duplicateOf: kept.id } },
     });
-    if (count > 0) out.add(email.dedupKey);
+    if (count === 0) continue;
+    if (freshKeys.has(dropped.dedupKey)) silenced.add(dropped.dedupKey);
+    // The kept one arrived in this request only if it is fresh; otherwise it already raised the notice of this Pix.
+    if (freshKeys.has(kept.dedupKey) && !freshKeys.has(dropped.dedupKey)) silenced.add(kept.dedupKey);
   }
-  return out;
+  return silenced;
 }
 
 /** A spending worth a notice: an EXPENSE reading with a positive value; never a notice (IGNORE) or an income. */
@@ -145,7 +156,10 @@ export async function ingestCaptures(
     select: { dedupKey: true },
   });
   const created = new Set(inserted.map((row) => row.dedupKey));
-  const dismissed = await dismissDuplicateEmails(scope.householdId, [...firstByKey.values()].filter((e) => created.has(e.dedupKey)));
+  const dismissed = await dismissDuplicates(
+    scope.householdId,
+    [...firstByKey.values()].filter((e) => created.has(e.dedupKey)).map((e) => ({ dedupKey: e.dedupKey, postedAt: e.postedAt, package: e.item.package, parsed: e.parsed })),
+  );
 
   const reported = new Set<string>();
   return prepared.map(({ dedupKey, parsed, ignored }) => {
@@ -153,7 +167,7 @@ export async function ingestCaptures(
     const isCreator = created.has(dedupKey) && !reported.has(dedupKey);
     reported.add(dedupKey);
     if (!isCreator) return { dedupKey, status: 'duplicate' as const };
-    // An e-mail dismissed as the duplicate of an app notification gets no notice: the app's capture already has one.
+    // One notice per Pix: a capture dismissed as a duplicate, or whose twin arrived earlier, raises none.
     const notice = dismissed.has(dedupKey) ? undefined : noticeOfReading(parsed);
     return { dedupKey, status: 'created' as const, ...(notice ? { notice } : {}) };
   });
@@ -487,11 +501,12 @@ export interface ReparseResult {
 export async function reparseCaptures(householdId: string): Promise<ReparseResult> {
   const rows = await prisma.capturedNotification.findMany({
     where: { householdId, status: { in: REPARSABLE_STATUSES }, OR: READ_BY_OLDER_PARSER },
-    select: { id: true, package: true, title: true, text: true, status: true },
+    select: { id: true, package: true, title: true, text: true, status: true, dedupKey: true, postedAt: true },
     orderBy: CAPTURE_ORDER,
     take: REPARSE_LIMIT,
   });
   const result: ReparseResult = { scanned: rows.length, updated: 0, understood: 0, dismissed: 0, notUnderstood: 0, parserVersion: PARSER_VERSION };
+  const reread: FreshCapture[] = [];
   for (const row of rows) {
     const parsed = parseCapture(row);
     const { count } = await prisma.capturedNotification.updateMany({
@@ -503,10 +518,13 @@ export async function reparseCaptures(householdId: string): Promise<ReparseResul
       },
     });
     if (count !== 1) continue;
+    reread.push({ dedupKey: row.dedupKey, postedAt: row.postedAt, package: row.package, parsed });
     result.updated += 1;
     if (!parsed) result.notUnderstood += 1;
     else if (parsed.ignore) result.dismissed += 1;
     else result.understood += 1;
   }
+  // A capture read again may now be the twin of another one (e.g. an app Pix sent that the older reader did not read).
+  await dismissDuplicates(householdId, reread);
   return result;
 }
