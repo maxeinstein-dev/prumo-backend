@@ -149,6 +149,54 @@ export async function putTransactionShares(
   return buildResponse(prisma, householdId, transaction);
 }
 
+/** A split sent together with a transaction that does not exist yet (P19: capture confirm). */
+export interface NewTransactionSplit {
+  strategy: 'percent' | 'exact' | 'equal';
+  entries: PutSharesInput['entries'];
+}
+
+/**
+ * The parts a split of a NEW transaction gives, checked before the transaction is written: only an expense (the
+ * people owe me their part), active people of the household, parts within the amount.
+ * @throws BadRequestError / NotFoundError('Person')
+ */
+export async function checkNewTransactionSplit(
+  db: Db,
+  householdId: string,
+  transaction: { type: string; amountCents: number },
+  split: NewTransactionSplit,
+): Promise<SplitResult['parts']> {
+  if (transaction.type !== 'EXPENSE') throw new BadRequestError('Only an expense can be split when it is created');
+  await assertPeopleUsable(db, householdId, split.entries.map((e) => e.personId));
+  return computeSplit({ totalCents: transaction.amountCents, strategy: split.strategy, entries: split.entries }).parts;
+}
+
+/**
+ * Writes the split of a transaction created in the same database transaction (it has no shares yet), as shares the
+ * people owe me. Checks again inside the transaction, so a person deactivated meanwhile rolls everything back.
+ */
+export async function writeNewTransactionSharesInTx(
+  tx: Db,
+  householdId: string,
+  transactionId: string,
+  transaction: { type: string; amountCents: number },
+  split: NewTransactionSplit,
+): Promise<void> {
+  const parts = await checkNewTransactionSplit(tx, householdId, transaction, split);
+  if (parts.length === 0) return;
+  await tx.transactionShare.createMany({
+    data: parts.map((part) => ({
+      householdId,
+      transactionId,
+      personId: part.personId,
+      direction: 'THEY_OWE_ME' as const,
+      amount: decimalFromCents(part.amountCents),
+      source: 'manual',
+      note: part.note,
+    })),
+  });
+}
+
 function formatReais(cents: number): string {
   return fromCents(cents).toFixed(2);
 }

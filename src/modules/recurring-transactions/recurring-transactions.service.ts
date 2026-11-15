@@ -13,6 +13,7 @@ import { addMonthsClamped, anchorDayOf, dayString, localDate, monthBoundsUtc } f
 import { normalizeDescription } from './detect.js';
 import { recurrenceNameKeys } from './recurring-aliases.js';
 import { FOLLOW_LOOKAHEAD_DAYS, followLastAmountInTx, plusDays } from './recurring-follow.js';
+import { applyDefaultSharesInTx, assertDefaultSharesUsable, loadDefaultShares, replaceDefaultSharesInTx } from './recurring-default-shares.js';
 import type {
   CreateRecurringTransactionInput,
   UpdateRecurringTransactionInput,
@@ -122,6 +123,7 @@ export async function createRecurringTransaction(
     earlyDiscountDay,
     earlyDiscountType,
     earlyDiscountValue,
+    defaultShares,
   } = input;
 
   assertForecastConsistent({ forecastStrategy, dailyRate: dailyRate ?? null, frequency });
@@ -143,9 +145,12 @@ export async function createRecurringTransaction(
     if (!cat) throw new BadRequestError('Custom category not found or does not belong to this household');
   }
 
+  // P19: the default split is checked before anything is written
+  if (defaultShares) await assertDefaultSharesUsable(prisma, householdId, defaultShares);
+
   const recurring = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
   await lockCustomCategory(tx, householdId, categoryName);
-  return tx.recurringTransaction.create({
+  const created = await tx.recurringTransaction.create({
     data: {
       householdId,
       accountId,
@@ -177,6 +182,8 @@ export async function createRecurringTransaction(
       },
     },
   });
+  if (defaultShares?.length) await replaceDefaultSharesInTx(tx, householdId, created.id, defaultShares);
+  return created;
   });
 
   // REGRA DE NEGÓCIO: Edge case de timing
@@ -234,7 +241,13 @@ export async function createRecurringTransaction(
   }
 
   // Convert Prisma.Decimal to number for JSON serialization
-  return plain(recurring);
+  return withDefaultShares(householdId, plain(recurring));
+}
+
+/** A recurrence with its default split (P19). */
+async function withDefaultShares<T extends { id: string }>(householdId: string, recurring: T) {
+  const shares = await loadDefaultShares(prisma, householdId, [recurring.id]);
+  return { ...recurring, defaultShares: shares.get(recurring.id) ?? [] };
 }
 
 /**
@@ -273,7 +286,7 @@ export async function getRecurringTransaction(recurringId: string) {
   }
 
   // Convert Prisma.Decimal to number for JSON serialization
-  return plain(recurring);
+  return withDefaultShares(recurring.householdId, plain(recurring));
 }
 
 /**
@@ -303,6 +316,7 @@ export async function listRecurringTransactions(
   const batch = await forecastBatch(prisma, recurring);
   const forecasts = recurring.map((r) => batch.expected(r, referenceMonthOf(r.nextRunAt, r.competenceOffsetMonths)));
   const today = localTodayString();
+  const defaultShares = await loadDefaultShares(prisma, householdId as string, recurring.map((r) => r.id));
   // Convert Prisma.Decimal to number for JSON serialization
   return recurring.map((r, i) => {
     // The discount of the next occurrence while it can still be had (absent otherwise): `amount` stays the full amount
@@ -311,6 +325,7 @@ export async function listRecurringTransactions(
       ...plain(r),
       lastOccurrenceDate: last.get(r.id) ?? null,
       forecast: forecasts[i],
+      defaultShares: defaultShares.get(r.id) ?? [],
       ...(earlyDiscount && { earlyDiscount }),
     };
   });
@@ -369,9 +384,13 @@ export async function updateRecurringTransaction(
     value: input.earlyDiscountValue !== undefined ? input.earlyDiscountValue : existing.earlyDiscountValue?.toNumber() ?? null,
   });
 
+  // P19: null clears the default split, a list replaces it, omitted keeps it
+  const newDefaultShares = input.defaultShares === undefined ? undefined : input.defaultShares ?? [];
+  if (newDefaultShares) await assertDefaultSharesUsable(prisma, householdId, newDefaultShares);
+
   const recurring = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
   await lockCustomCategory(tx, householdId, input.categoryName);
-  return tx.recurringTransaction.update({
+  const updated = await tx.recurringTransaction.update({
     where: { id: recurringId },
     data: {
       ...(input.accountId && { accountId: input.accountId }),
@@ -405,6 +424,8 @@ export async function updateRecurringTransaction(
       },
     },
   });
+  if (newDefaultShares) await replaceDefaultSharesInTx(tx, householdId, recurringId, newDefaultShares);
+  return updated;
   });
 
   // REGRA DE NEGÓCIO: Edge case de timing
@@ -461,7 +482,7 @@ export async function updateRecurringTransaction(
   }
 
   // Convert Prisma.Decimal to number for JSON serialization
-  return plain(recurring);
+  return withDefaultShares(householdId, plain(recurring));
 }
 
 /**
@@ -652,6 +673,8 @@ export async function executeRecurringTransaction(
             where: { id: candidate.id, householdId },
             include: { account: { select: { id: true, name: true, type: true } } },
           });
+          // P19: the adopted row takes the default split, unless it was already split by hand
+          if (adopted) await applyDefaultSharesInTx(tx, householdId, recurring.id, adopted);
           const nextRunAt = calculateNextRunDate(transactionDate, recurring.frequency, anchorDay);
           await tx.recurringTransaction.update({
             where: { id: recurringId },
@@ -690,6 +713,9 @@ export async function executeRecurringTransaction(
         },
       },
     });
+
+    // P19: the occurrence is born with the default split of the recurrence, on its real amount
+    await applyDefaultSharesInTx(tx, householdId, recurring.id, transaction);
 
     // REGRA DE NEGÓCIO: Atualizar saldo APENAS se paid: true
     // Para cartão de crédito: consome limite imediatamente

@@ -5,6 +5,7 @@ import { ConflictError, NotFoundError } from '../../shared/errors/index.js';
 import { buildPaginationArgs, createPaginatedResponse } from '../../shared/utils/pagination.js';
 import { createTransaction, getTransactionWithHousehold } from '../transactions/transactions.service.js';
 import type { CreateTransactionInput } from '../transactions/transactions.schema.js';
+import { checkNewTransactionSplit, writeNewTransactionSharesInTx } from '../people/shares.service.js';
 import { buildCategoryHints, type CategoryHints } from './capture-category.js';
 import { buildSuggestion, suggestedPlace, type SuggestionCardRule, type SuggestionRule } from './capture-suggestion.js';
 import { PARSER_VERSION, parseCapture, type ParsedCapture } from './parsers/index.js';
@@ -262,10 +263,15 @@ export async function confirmCapture(
     throw new ConflictError(`A ${capture.status.toLowerCase()} capture cannot be confirmed`);
   }
 
+  // P19: the split ("Metade com", "É de") is checked before anything is written, and written with the transaction
+  const { shares: split, ...fields } = input;
+  const splitFacts = { type: fields.type ?? '', amountCents: Math.round(fields.amount * 100) };
+  if (split) await checkNewTransactionSplit(prisma, householdId, splitFacts, split);
+
   const sourceRef = captureSourceRef(capture.dedupKey);
   try {
     const transaction = await createTransaction(
-      { ...input, householdId, sourceRef, isSplit: false } as CreateTransactionInput,
+      { ...fields, householdId, sourceRef, isSplit: false } as CreateTransactionInput,
       userId,
       {
         inTransaction: async (tx, created) => {
@@ -274,6 +280,7 @@ export async function confirmCapture(
             data: { status: 'CONFIRMED', transactionId: created.id },
           });
           if (claimed.count !== 1) throw new ConflictError('The capture is no longer pending');
+          if (split) await writeNewTransactionSharesInTx(tx, householdId, created.id, splitFacts, split);
         },
       }
     );

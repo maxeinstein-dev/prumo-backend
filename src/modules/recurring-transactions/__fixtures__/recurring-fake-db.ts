@@ -26,6 +26,10 @@ const SPECS: Record<string, { unique: string[][]; defaults: () => Record<string,
   },
   account: { unique: [], defaults: () => ({ balance: 0, isActive: true, type: 'CHECKING', name: 'Conta' }) },
   category: { unique: [], defaults: () => ({}) },
+  // P19: people, the shares of a transaction and the default split of a recurrence
+  person: { unique: [], defaults: () => ({ isActive: true, userId: null }) },
+  transactionShare: { unique: [['transactionId', 'personId', 'direction']], defaults: () => ({ note: null, source: 'manual' }) },
+  recurringTransactionShare: { unique: [['recurringTransactionId', 'personId']], defaults: () => ({ percent: null, amount: null }) },
 };
 
 type Store = Record<string, Row[]>;
@@ -44,7 +48,7 @@ function prismaError(code: string, message: string): Error {
 
 function toStored(field: string, value: unknown): unknown {
   if (value instanceof Date) return dayString(value);
-  if ((field === 'amount' || field === 'dailyRate' || field === 'earlyDiscountValue') && value !== null && typeof value === 'object') return Number(String(value));
+  if ((field === 'amount' || field === 'dailyRate' || field === 'earlyDiscountValue' || field === 'percent') && value !== null && typeof value === 'object') return Number(String(value));
   return value;
 }
 
@@ -83,6 +87,7 @@ function project(row: Row, select?: Record<string, boolean>): Record<string, unk
   if (typeof row.amount === 'number') full.amount = decimal(row.amount);
   if (typeof row.dailyRate === 'number') full.dailyRate = decimal(row.dailyRate);
   if (typeof row.earlyDiscountValue === 'number') full.earlyDiscountValue = decimal(row.earlyDiscountValue);
+  if (typeof row.percent === 'number') full.percent = decimal(row.percent);
   for (const f of ['date', 'startDate', 'nextRunAt', 'endDate', 'lastRunDate']) {
     if (typeof row[f] === 'string') full[f] = new Date(`${row[f]}T00:00:00.000Z`);
   }
@@ -172,6 +177,19 @@ function table(name: string) {
         return out;
       });
     }),
+    createMany: vi.fn(async (args: { data: Record<string, unknown>[] }) => {
+      for (const data of args.data) {
+        const row = build(name, data);
+        if (collides(name, row, rows())) throw prismaError('P2002', `Unique constraint failed: ${name}`);
+        rows().push(row);
+      }
+      return { count: args.data.length };
+    }),
+    deleteMany: vi.fn(async (args: { where?: Where } = {}) => {
+      const before = rows().length;
+      store[name] = rows().filter((r) => !matches(r, args.where));
+      return { count: before - store[name]!.length };
+    }),
     updateMany: vi.fn(async (args: { where?: Where; data: Record<string, unknown> }) => {
       const found = rows().filter((r) => matches(r, args.where));
       for (const row of found) for (const [field, value] of Object.entries(args.data)) row[field] = toStored(field, value);
@@ -189,6 +207,9 @@ export const fakePrisma = {
   recurringTransaction: table('recurringTransaction'),
   account: table('account'),
   category: table('category'),
+  person: table('person'),
+  transactionShare: table('transactionShare'),
+  recurringTransactionShare: table('recurringTransactionShare'),
   /** External refs (card statement import) do not exist in these scenarios: nothing is linked. */
   transactionExternalRef: {
     findMany: vi.fn(async () => []),
@@ -351,3 +372,22 @@ export function seedRecurrence(data: SeedRecurrence): Row {
 
 export const rowsOf = (name: keyof typeof SPECS): Row[] => store[name]!;
 export const rowById = (name: keyof typeof SPECS, id: string): Row => store[name]!.find((r) => r.id === id)!;
+
+export function seedPerson(data: { id: string; householdId: string; name: string; isActive?: boolean }): Row {
+  const row = build('person', data);
+  store.person!.push(row);
+  return row;
+}
+
+/** A default-split rule of a recurrence (P19): percent or a fixed amount. */
+export function seedDefaultShare(data: { householdId: string; recurringTransactionId: string; personId: string; percent?: number | null; amount?: number | null }): Row {
+  const row = build('recurringTransactionShare', data);
+  store.recurringTransactionShare!.push(row);
+  return row;
+}
+
+export function seedShare(data: { householdId: string; transactionId: string; personId: string; amount: number; direction?: string; source?: string }): Row {
+  const row = build('transactionShare', { direction: 'THEY_OWE_ME', ...data });
+  store.transactionShare!.push(row);
+  return row;
+}
