@@ -41,6 +41,20 @@ export const earlyDiscountTypeSchema = z.enum(EARLY_DISCOUNT_TYPES);
 export const earlyDiscountValueSchema = z.union([z.number(), z.string().trim().min(1)]).pipe(z.coerce.number().positive().max(1_000_000_000));
 
 /**
+ * Default split of the recurrence (P19): who takes a part of each occurrence, by percent of the real amount or by a
+ * fixed amount. The shape is checked here; the rules (one kind, sums, active people) by the service.
+ */
+export const defaultSharesSchema = z
+  .array(
+    z.object({
+      personId: z.string().uuid(),
+      percent: z.number().nullish(),
+      amount: z.number().nullish(),
+    }),
+  )
+  .max(20);
+
+/**
  * Create recurring transaction request
  */
 export const createRecurringTransactionSchema = z.object({
@@ -70,6 +84,8 @@ export const createRecurringTransactionSchema = z.object({
   earlyDiscountDay: earlyDiscountDaySchema.nullish(),
   earlyDiscountType: earlyDiscountTypeSchema.nullish(),
   earlyDiscountValue: earlyDiscountValueSchema.nullish(),
+  // P19: default split of every occurrence; omitted = none
+  defaultShares: defaultSharesSchema.optional(),
 }).superRefine((input, ctx) => {
   const { earlyDiscountDay: day, earlyDiscountType: type, earlyDiscountValue: value } = input;
   const given = [day, type, value].filter((v) => v !== null && v !== undefined).length;
@@ -112,6 +128,8 @@ export const updateRecurringTransactionSchema = z.object({
   earlyDiscountDay: earlyDiscountDaySchema.nullable().optional(),
   earlyDiscountType: earlyDiscountTypeSchema.nullable().optional(),
   earlyDiscountValue: earlyDiscountValueSchema.nullable().optional(),
+  // P19: replaces the default split; null or [] removes it, omitted keeps it
+  defaultShares: defaultSharesSchema.nullable().optional(),
 });
 
 export type UpdateRecurringTransactionInput = z.infer<
