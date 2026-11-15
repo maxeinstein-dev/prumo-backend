@@ -58,6 +58,7 @@ vi.mock('../transactions/transactions.service.js', async () => {
 
 const { confirmCapture } = await import('./captures.service.js');
 const { confirmCaptureSchema } = await import('./captures.schema.js');
+const { createTransaction } = await import('../transactions/transactions.service.js');
 
 // Invented data only.
 const HH = 'hh-1';
@@ -66,6 +67,7 @@ const GONE = '44444444-4444-4444-8444-444444444444';
 const ACC = '11111111-1111-4111-8111-111111111111';
 
 beforeEach(() => {
+  vi.clearAllMocks();
   state.capture = { id: 'cap-1', householdId: HH, status: 'PENDING', transactionId: null, dedupKey: 'k'.repeat(40) };
   state.shares = [];
   state.transactions = [];
@@ -101,6 +103,8 @@ describe('confirmCapture with a split (P19 L3)', () => {
     expect(state.transactions).toEqual([]);
     expect(state.shares).toEqual([]);
     expect(state.capture!.status).toBe('PENDING');
+    // Refused before the transaction is even attempted
+    expect(createTransaction).not.toHaveBeenCalled();
   });
 
   it('the schema takes only percent, exact and equal, with at least one person', () => {
