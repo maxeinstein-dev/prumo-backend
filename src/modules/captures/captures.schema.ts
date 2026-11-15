@@ -32,7 +32,7 @@ export type CreateCapturesInput = z.infer<typeof createCapturesSchema>;
 // ---------------------------------------------------------------------------------------------------------------
 
 export const CAPTURE_STATUSES = ['PENDING', 'CONFIRMED', 'DISMISSED', 'IGNORED'] as const;
-export const CAPTURE_KINDS = ['CARD_PURCHASE', 'PIX_OUT', 'PIX_IN', 'REFUND', 'SAVINGS_MOVE'] as const;
+export const CAPTURE_KINDS = ['CARD_PURCHASE', 'PIX_OUT', 'PIX_IN', 'REFUND', 'SAVINGS_MOVE', 'WALLET_PIX_OUT'] as const;
 export const MAX_ACCOUNT_RULES = 100;
 
 export type CaptureStatusValue = (typeof CAPTURE_STATUSES)[number];
