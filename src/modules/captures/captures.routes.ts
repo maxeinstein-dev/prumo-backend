@@ -12,6 +12,7 @@ import {
   captureActionQuerySchema,
   captureIdParamSchema,
   confirmCaptureSchema,
+  confirmTransferSchema,
   countCapturesQuerySchema,
   createCapturesSchema,
   listCapturesQuerySchema,
@@ -230,6 +231,23 @@ export async function captureRoutes(app: FastifyInstance) {
   });
 
   /** POST /captures/reparse : read again, with the current parser, the drafts an older parser read (EDITOR+). */
+  app.post('/transfer', {
+    ...jwt,
+    schema: {
+      ...jwtRoute,
+      description: 'Confirm an outflow capture and an own-income capture of the same Pix as one transfer between two accounts (EDITOR+). Idempotent: answers 200 with the transfer when both were already confirmed with it. A side that is no longer pending is a 409; two captures that are not an outflow and an own income of the same amount are a 400.',
+      response: { 200: objectResponse, 201: objectResponse },
+    },
+  }, async (request, reply) => {
+    const query = captureActionQuerySchema.parse(request.query);
+    const input = confirmTransferSchema.parse(request.body);
+    const householdId = await resolveHousehold(request, query.householdId);
+    await requireEditor(request, householdId);
+
+    const result = await capturesService.confirmTransferPair(householdId, input);
+    return reply.status(result.created ? 201 : 200).send({ success: true, data: result });
+  });
+
   app.post('/reparse', {
     ...jwt,
     schema: {

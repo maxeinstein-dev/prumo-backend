@@ -176,6 +176,25 @@ vi.mock('../transactions/transactions.service.js', () => ({
     store.transactions.push(row);
     return row;
   }),
+  // createTransfer stand-in: the same (householdId, sourceRef) unique constraint and in-transaction hook as createTransaction.
+  createTransfer: vi.fn(async (input: Row, hooks?: { inTransaction?: (tx: unknown, created: { id: string }) => Promise<void> }) => {
+    store.createCalls += 1;
+    await Promise.resolve();
+    if (input.fromAccountId === input.toAccountId) throw Object.assign(new Error('Cannot transfer to the same account'), { statusCode: 400, code: 'BAD_REQUEST' });
+    if (input.sourceRef && store.transactions.some((t) => t.householdId === input.householdId && t.sourceRef === input.sourceRef)) {
+      throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+    }
+    const row = { id: `00000000-0000-4000-8000-${String(store.transactions.length + 1).padStart(12, '0')}`, type: 'TRANSFER', ...input };
+    const before = store.captures.map((c) => ({ ...c }));
+    try {
+      await hooks?.inTransaction?.(prismaMock.current, row);
+    } catch (error) {
+      store.captures = before;
+      throw error;
+    }
+    store.transactions.push(row);
+    return row;
+  }),
   getTransactionWithHousehold: vi.fn(async (id: string, householdId: string) => {
     const row = store.transactions.find((t) => t.id === id && t.householdId === householdId);
     if (!row) throw Object.assign(new Error('Transaction not found'), { statusCode: 404, code: 'NOT_FOUND' });
@@ -305,7 +324,7 @@ describe('GET /captures', () => {
     const body = res.json();
     expect(body.data.map((c: { id: string }) => c.id)).toEqual([capId(3), capId(2), capId(1)]);
     expect(body.pagination).toEqual({ nextCursor: null, hasMore: false });
-    expect(Object.keys(body.data[0]).sort()).toEqual(['id', 'package', 'parsed', 'postedAt', 'status', 'suggestion', 'text', 'title', 'transactionId']);
+    expect(Object.keys(body.data[0]).sort()).toEqual(['id', 'package', 'parsed', 'postedAt', 'status', 'suggestion', 'text', 'title', 'transactionId', 'transferPair']);
     expect(res.body).not.toContain('dedupKey');
     expect(res.body).not.toContain(OTHER_HOUSEHOLD_ID);
   });
@@ -931,5 +950,103 @@ describe('POST /captures/reparse', () => {
     expect((await postTo('/captures/reparse', undefined, { authorization: `Bearer ${generateDeviceToken()}` })).statusCode).toBe(401);
     expect((await postTo('/captures/reparse', undefined, {} as never)).statusCode).toBe(401);
     expect(store.captures[0]!.parsed).toBeNull();
+  });
+});
+
+describe('own transfer between two captures', () => {
+  const MP = 'com.mercadopago.wallet';
+  const NU = 'com.nu.production';
+  const GM = 'com.google.android.gm';
+  const NUBANK_ACCOUNT = '11111111-2222-4333-8444-555555555555';
+  const outflow = (n: number, over: Row = {}) => addCapture(n, {
+    package: MP, title: 'Seu Pix foi enviado', parsed: { kind: 'PIX_OUT', type: 'EXPENSE', amountCents: 1000, amount: 10, method: 'PIX', description: 'MARIA' }, ...over,
+  });
+  const income = (n: number, over: Row = {}) => addCapture(n, {
+    package: NU, title: 'Transferência recebida', parsed: { kind: 'PIX_IN', type: 'INCOME', amountCents: 1000, amount: 10, method: 'TRANSFER', description: 'Transferência recebida', warning: 'POSSIBLE_OWN_TRANSFER' }, ...over,
+  });
+  const body = (over: Row = {}) => ({
+    outCaptureId: capId(1), inCaptureId: capId(2), fromAccountId: ACCOUNT_ID, toAccountId: NUBANK_ACCOUNT, amount: 10, date: '2026-11-15', ...over,
+  });
+  const transfer = (payload: unknown = body(), headers = as()) => postTo('/captures/transfer', payload, headers);
+
+  beforeEach(() => {
+    store.accounts.push({ id: NUBANK_ACCOUNT, householdId: PERSONAL_ID, isActive: true });
+  });
+
+  it('lists the two sides of a possible own transfer with each other, and the account the partner would take', async () => {
+    store.rules.push({ householdId: PERSONAL_ID, package: NU, kind: 'PIX_IN', accountId: NUBANK_ACCOUNT });
+    outflow(1);
+    income(2);
+    addCapture(3, { package: NU, parsed: { kind: 'PIX_IN', type: 'INCOME', amountCents: 999, warning: 'POSSIBLE_OWN_TRANSFER' } });
+    const { data } = (await get('/captures')).json();
+    const byId = Object.fromEntries(data.map((c: { id: string; transferPair: unknown }) => [c.id, c.transferPair]));
+    expect(byId[capId(1)]).toEqual({ captureId: capId(2), side: 'out', partnerAccountId: NUBANK_ACCOUNT });
+    expect(byId[capId(2)]).toEqual({ captureId: capId(1), side: 'in', partnerAccountId: null });
+    expect(byId[capId(3)]).toBeNull();
+  });
+
+  it('also pairs the Google Pay e-mail of a Pix from the Nubank account with the Mercado Pago deposit', async () => {
+    addCapture(1, { package: GM, title: 'Google Pay', parsed: { kind: 'WALLET_PIX_OUT', type: 'EXPENSE', amountCents: 1000 } });
+    addCapture(2, { package: MP, parsed: { kind: 'PIX_IN', type: 'INCOME', amountCents: 1000, warning: 'POSSIBLE_OWN_TRANSFER' } });
+    const { data } = (await get('/captures')).json();
+    expect(data.find((c: { id: string }) => c.id === capId(1)).transferPair).toMatchObject({ captureId: capId(2), side: 'out' });
+  });
+
+  it('confirms the pair as one transfer and both captures with it, in one step', async () => {
+    outflow(1);
+    income(2);
+    const res = await transfer();
+    expect(res.statusCode).toBe(201);
+    expect(store.transactions).toHaveLength(1);
+    const tx = store.transactions[0]!;
+    expect(tx).toMatchObject({ type: 'TRANSFER', householdId: PERSONAL_ID, fromAccountId: ACCOUNT_ID, toAccountId: NUBANK_ACCOUNT, amount: 10, sourceRef: `notif:${'key1'.padEnd(40, '0')}` });
+    expect(store.captures.map((c) => [c.status, c.transactionId])).toEqual([['CONFIRMED', tx.id], ['CONFIRMED', tx.id]]);
+    expect(res.json().data).toMatchObject({ created: true, transaction: { id: tx.id } });
+  });
+
+  it('is idempotent, and two simultaneous confirmations make one transfer', async () => {
+    outflow(1);
+    income(2);
+    const [a, b] = await Promise.all([transfer(), transfer()]);
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 201]);
+    expect(store.transactions).toHaveLength(1);
+    const again = await transfer();
+    expect(again.statusCode).toBe(200);
+    expect(again.json().data).toMatchObject({ created: false, transaction: { id: store.transactions[0]!.id } });
+  });
+
+  it('refuses when a side is no longer pending, and writes nothing', async () => {
+    outflow(1);
+    income(2, { status: 'DISMISSED' });
+    expect((await transfer()).statusCode).toBe(409);
+    store.captures[1]!.status = 'CONFIRMED';
+    store.captures[1]!.transactionId = 'something-else';
+    expect((await transfer()).statusCode).toBe(409);
+    expect(store.transactions).toHaveLength(0);
+    expect(store.captures[0]!.status).toBe('PENDING');
+  });
+
+  it('refuses two captures that are not an outflow and an own income of the same amount (400)', async () => {
+    outflow(1);
+    outflow(2);
+    expect((await transfer()).statusCode).toBe(400);
+    store.captures.length = 0;
+    outflow(1);
+    income(2, { parsed: { kind: 'PIX_IN', type: 'INCOME', amountCents: 2000, warning: 'POSSIBLE_OWN_TRANSFER' } });
+    expect((await transfer()).statusCode).toBe(400);
+    expect((await transfer(body({ inCaptureId: capId(1) }))).statusCode).toBe(400);
+    expect(store.transactions).toHaveLength(0);
+  });
+
+  it('answers 404 for a capture of another household and 403 to a viewer, and validates the body', async () => {
+    outflow(1);
+    income(2, { householdId: OTHER_HOUSEHOLD_ID });
+    expect((await transfer()).statusCode).toBe(404);
+    store.captures[1]!.householdId = PERSONAL_ID;
+    expect((await transfer(body(), as(VIEWER_ID))).statusCode).toBe(403);
+    for (const bad of [body({ amount: 0 }), body({ outCaptureId: 'x' }), body({ date: 'ontem' }), { ...body(), extra: 1 }]) {
+      expect((await transfer(bad)).statusCode).toBe(400);
+    }
+    expect(store.transactions).toHaveLength(0);
   });
 });
