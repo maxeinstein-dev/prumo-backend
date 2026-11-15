@@ -79,6 +79,17 @@ describe('Gmail: Pix paid with Google Pay', () => {
     expect(parseCapture({ package: GM, title: 'Google Pay', text: text('10.00') })).toMatchObject({ amountCents: 1000 });
   });
 
+  it('reads the body of the e-mail too, when the notification carries the body without the subject (print of 15/11)', () => {
+    const body = 'Seu Pix foi concluído com sucesso.\nR$37,50\nPagamento concluído! Você pode conferir mais detalhes sobre essa transação na Carteira do Google ou no app da sua inst…';
+    expect(parseCapture({ package: GM, title: 'Google Pay', text: body })).toEqual({
+      kind: 'WALLET_PIX_OUT', type: 'EXPENSE', amountCents: 3750, amount: 37.5, method: 'PIX', description: 'Pix pelo Google Pay',
+    });
+    const both = 'Seu Pix de R$37,50 no Google Pay foi realizado com sucesso\nConfira mais detalhes na Carteira do Google\n\n' + body;
+    expect(parseCapture({ package: GM, title: 'Google Pay', text: both })).toMatchObject({ amountCents: 3750 });
+    expect(parseCapture({ package: GM, title: 'Google Pay', text: 'Seu Pix foi concluído com sucesso.' })).toBeNull();
+    expect(parseCapture({ package: GM, title: 'Maria Silva', text: body })).toBeNull();
+  });
+
   it('reads the sentence in any line of the e-mail preview', () => {
     expect(parseCapture({ package: GM, title: 'Google Pay', text: `Pix realizado\n${text('25,00')}` })).toMatchObject({ amountCents: 2500 });
   });
