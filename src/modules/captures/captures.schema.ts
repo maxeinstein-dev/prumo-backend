@@ -1,3 +1,5 @@
+import { shareEntrySchema } from '../people/people.schema.js';
+import { MAX_SPLIT_ENTRIES } from '../people/split-strategies.js';
 import { z } from 'zod';
 import { localDateSchema } from '../../shared/utils/dateSchema.js';
 import { categoryNameSchema } from '../categories/categories.schema.js';
@@ -69,6 +71,11 @@ export const confirmCaptureSchema = z.object({
   notes: z.string().max(1000).optional(),
   paid: z.boolean().default(true),
   competenceMonth: competenceMonthSchema.nullish(),
+  // P19: "Metade com" / "É de": the split of the expense, written in the same database transaction
+  shares: z.object({
+    strategy: z.enum(['percent', 'exact', 'equal']),
+    entries: z.array(shareEntrySchema).min(1).max(MAX_SPLIT_ENTRIES),
+  }).strict().optional(),
 }).strict();
 
 export const accountRuleSchema = z.object({
