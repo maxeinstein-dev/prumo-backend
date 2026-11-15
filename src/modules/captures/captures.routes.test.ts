@@ -81,10 +81,22 @@ vi.mock('../../shared/db/prisma.js', () => ({
         const created: CaptureRow[] = [];
         for (const row of data) {
           if (store.captures.some((c) => c.householdId === row.householdId && c.dedupKey === row.dedupKey)) continue;
-          store.captures.push(row);
-          created.push(row);
+          const stored = { id: `00000000-0000-4000-9000-${String(store.captures.length + 1).padStart(12, '0')}`, ...row };
+          store.captures.push(stored);
+          created.push(stored);
         }
         return created.map((r) => ({ dedupKey: r.dedupKey }));
+      }),
+      // The duplicate pass reads a window of the household's captures and dismisses a pending e-mail by id.
+      findMany: vi.fn(async ({ where, select }: { where: { householdId: string; postedAt: { gte: Date; lte: Date } }; select?: Record<string, boolean> }) =>
+        store.captures
+          .filter((c) => c.householdId === where.householdId
+            && (c.postedAt as Date).getTime() >= where.postedAt.gte.getTime() && (c.postedAt as Date).getTime() <= where.postedAt.lte.getTime())
+          .map((c) => pick(c, select))),
+      updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        const rows = store.captures.filter((c) => matches(c, where));
+        rows.forEach((c) => Object.assign(c, data));
+        return { count: rows.length };
       }),
     },
   },
@@ -537,4 +549,60 @@ describe('POST /captures rate limit', () => {
     expect(other.statusCode).toBe(401);
     await limited.close();
   }, 30000);
+});
+
+describe('POST /captures: Gmail senders and duplicate e-mails', () => {
+  const GM = 'com.google.android.gm';
+  const MP = 'com.mercadopago.wallet';
+  const googlePay = (over: Record<string, unknown> = {}) =>
+    item({ package: GM, title: 'Google Pay', text: 'Seu Pix de R$10,00 no Google Pay foi realizado com sucesso.', postedAt: '2026-11-15T12:03:00.000Z', ...over });
+  const mpSent = (over: Record<string, unknown> = {}) =>
+    item({ package: MP, title: 'Seu Pix foi enviado', text: 'O Pix de R$ 10.00 foi feito para MARIA FICTICIA, CPF: ∗∗∗.123.456-∗∗.', postedAt: '2026-11-15T12:00:00.000Z', ...over });
+
+  it('never stores an e-mail from a sender that is not a bank: it answers ignored', async () => {
+    const token = await newToken();
+    const res = await post(token, { items: [item({ package: GM, title: 'Maria Silva', text: 'Oi, tudo bem? O almoço de domingo...' }), googlePay()] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.results.map((r: { status: string }) => r.status)).toEqual(['ignored', 'created']);
+    expect(store.captures).toHaveLength(1);
+    expect(JSON.stringify(store.captures)).not.toContain('almoço');
+  });
+
+  it('dismisses the Google Pay e-mail that repeats the Mercado Pago outflow, in one batch or in two, in either order', async () => {
+    const token = await newToken();
+    await post(token, { items: [mpSent(), googlePay()] });
+    const app1 = store.captures.find((c) => c.package === MP)!;
+    const mail1 = store.captures.find((c) => c.package === GM)!;
+    expect(app1.status).toBe('PENDING');
+    expect(mail1).toMatchObject({ status: 'DISMISSED', parsed: { kind: 'WALLET_PIX_OUT', duplicateOf: app1.id } });
+
+    store.captures.length = 0;
+    await post(token, { items: [googlePay()] });
+    expect(store.captures[0]!.status).toBe('PENDING');
+    await post(token, { items: [mpSent()] });
+    expect(store.captures.find((c) => c.package === GM)).toMatchObject({ status: 'DISMISSED', parsed: { duplicateOf: store.captures.find((c) => c.package === MP)!.id } });
+  });
+
+  it('does not dismiss again an e-mail the user restored when an unrelated outflow arrives later', async () => {
+    const token = await newToken();
+    await post(token, { items: [mpSent(), googlePay()] });
+    const mail = store.captures.find((c) => c.package === GM)!;
+    expect(mail.status).toBe('DISMISSED');
+    mail.status = 'PENDING'; // the user restored it
+
+    await post(token, { items: [mpSent({ text: 'O Pix de R$ 25.00 foi feito para JOAO FICTICIO.', postedAt: '2026-11-15T12:05:00.000Z' })] });
+    expect(mail.status).toBe('PENDING');
+  });
+
+  it('keeps an e-mail of another amount, of more than ten minutes later, or of another household', async () => {
+    const token = await newToken();
+    await post(token, { items: [mpSent(), googlePay({ text: 'Seu Pix de R$11,00 no Google Pay foi realizado com sucesso.' }), googlePay({ postedAt: '2026-11-15T12:11:00.000Z' })] });
+    expect(store.captures.filter((c) => c.package === GM).map((c) => c.status)).toEqual(['PENDING', 'PENDING']);
+
+    store.captures.length = 0;
+    await post(token, { items: [mpSent()] });
+    const shared = await newToken({ name: 'Outro', householdId: SHARED_ID });
+    await post(shared, { items: [googlePay()] });
+    expect(store.captures.find((c) => c.package === GM)!.status).toBe('PENDING');
+  });
 });

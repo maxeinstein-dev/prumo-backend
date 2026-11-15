@@ -9,6 +9,8 @@ import { checkNewTransactionSplit, writeNewTransactionSharesInTx } from '../peop
 import { buildCategoryHints, type CategoryHints } from './capture-category.js';
 import { buildSuggestion, suggestedPlace, type SuggestionCardRule, type SuggestionRule } from './capture-suggestion.js';
 import { PARSER_VERSION, parseCapture, type ParsedCapture } from './parsers/index.js';
+import { isAllowedGmailSender } from './parsers/gmail.js';
+import { DUPLICATE_WINDOW_MS, GMAIL_PACKAGE, duplicateEmails, isAppOutflow, isEmailOutflow } from './capture-duplicates.js';
 import type { AccountRuleInput, CaptureItemInput, CaptureStatusValue, CardRuleInput, ConfirmCaptureInput } from './captures.schema.js';
 
 /** A notice is dismissed (decided 13/11/2026; "restore" brings it back); anything else waits for the user. */
@@ -28,9 +30,47 @@ export interface CaptureNotice {
 
 export interface CaptureResult {
   dedupKey: string;
-  status: 'created' | 'duplicate';
+  /** `ignored`: an e-mail from a sender that is not a bank; nothing of it was stored. */
+  status: 'created' | 'duplicate' | 'ignored';
   /** Only on a `created` item whose reading is a spending with a value; absent otherwise. */
   notice?: CaptureNotice;
+}
+
+/**
+ * After new captures are stored: an e-mail outflow that repeats an app outflow (same amount, at most ten minutes apart)
+ * is dismissed, with `duplicateOf` in its reading so the screen can say why (see capture-duplicates.ts). Only pairs that
+ * involve a capture of this request are acted on, so an e-mail the user restored is not dismissed again by an unrelated
+ * upload. Returns the dedup keys of the e-mails it dismissed.
+ */
+async function dismissDuplicateEmails(
+  householdId: string,
+  fresh: ReadonlyArray<{ dedupKey: string; postedAt: Date; item: { package: string }; parsed: ParsedCapture | null }>,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const relevant = fresh.filter((e) => isEmailOutflow({ package: e.item.package, parsed: e.parsed }) || isAppOutflow({ package: e.item.package, parsed: e.parsed }));
+  if (relevant.length === 0) return out;
+  const times = relevant.map((e) => e.postedAt.getTime());
+  const window = await prisma.capturedNotification.findMany({
+    where: {
+      householdId,
+      postedAt: { gte: new Date(Math.min(...times) - DUPLICATE_WINDOW_MS), lte: new Date(Math.max(...times) + DUPLICATE_WINDOW_MS) },
+    },
+    select: { id: true, package: true, status: true, postedAt: true, parsed: true, dedupKey: true },
+  });
+  const freshKeys = new Set(relevant.map((e) => e.dedupKey));
+  const byId = new Map(window.map((c) => [c.id, c]));
+  for (const pair of duplicateEmails(window)) {
+    const email = byId.get(pair.id)!;
+    const app = byId.get(pair.duplicateOf)!;
+    if (!freshKeys.has(email.dedupKey) && !freshKeys.has(app.dedupKey)) continue;
+    const reading = (email.parsed ?? {}) as Prisma.InputJsonObject;
+    const { count } = await prisma.capturedNotification.updateMany({
+      where: { id: email.id, householdId, status: 'PENDING' },
+      data: { status: 'DISMISSED', parsed: { ...reading, duplicateOf: app.id } },
+    });
+    if (count > 0) out.add(email.dedupKey);
+  }
+  return out;
 }
 
 /** A spending worth a notice: an EXPENSE reading with a positive value; never a notice (IGNORE) or an income. */
@@ -65,15 +105,18 @@ export async function ingestCaptures(
 ): Promise<CaptureResult[]> {
   const prepared = items.map((item) => {
     const postedAt = new Date(item.postedAt);
-    const parsed = parseCapture({ package: item.package, title: item.title ?? null, text: item.text });
-    return { item, postedAt, parsed, dedupKey: computeDedupKey({ ...item, postedAt }) };
+    // An e-mail from anyone but Google Pay, Mercado Pago or a bank is never stored: the phone already drops it, and this
+    // keeps the preview of a personal e-mail out of the database even if a phone does not.
+    const ignored = item.package === GMAIL_PACKAGE && !isAllowedGmailSender(item.title ?? null);
+    const parsed = ignored ? null : parseCapture({ package: item.package, title: item.title ?? null, text: item.text });
+    return { item, postedAt, parsed, ignored, dedupKey: computeDedupKey({ ...item, postedAt }) };
   });
 
   // Repeats inside the batch: only the first occurrence is inserted (a repeat in one INSERT would be skipped
   // anyway, but then the result could not say which of the two was the creator).
   const firstByKey = new Map<string, (typeof prepared)[number]>();
   for (const entry of prepared) {
-    if (!firstByKey.has(entry.dedupKey)) firstByKey.set(entry.dedupKey, entry);
+    if (!entry.ignored && !firstByKey.has(entry.dedupKey)) firstByKey.set(entry.dedupKey, entry);
   }
 
   const inserted = await prisma.capturedNotification.createManyAndReturn({
@@ -98,13 +141,16 @@ export async function ingestCaptures(
     select: { dedupKey: true },
   });
   const created = new Set(inserted.map((row) => row.dedupKey));
+  const dismissed = await dismissDuplicateEmails(scope.householdId, [...firstByKey.values()].filter((e) => created.has(e.dedupKey)));
 
   const reported = new Set<string>();
-  return prepared.map(({ dedupKey, parsed }) => {
+  return prepared.map(({ dedupKey, parsed, ignored }) => {
+    if (ignored) return { dedupKey, status: 'ignored' as const };
     const isCreator = created.has(dedupKey) && !reported.has(dedupKey);
     reported.add(dedupKey);
     if (!isCreator) return { dedupKey, status: 'duplicate' as const };
-    const notice = noticeOfReading(parsed);
+    // An e-mail dismissed as the duplicate of an app notification gets no notice: the app's capture already has one.
+    const notice = dismissed.has(dedupKey) ? undefined : noticeOfReading(parsed);
     return { dedupKey, status: 'created' as const, ...(notice ? { notice } : {}) };
   });
 }

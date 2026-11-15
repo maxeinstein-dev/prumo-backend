@@ -72,7 +72,7 @@ export async function captureRoutes(app: FastifyInstance) {
                     type: 'object',
                     properties: {
                       dedupKey: { type: 'string' },
-                      status: { type: 'string', enum: ['created', 'duplicate'] },
+                      status: { type: 'string', enum: ['created', 'duplicate', 'ignored'] },
                       // P01 D3: a new spending the server understood; the phone shows a local notice for it.
                       notice: {
                         type: 'object',

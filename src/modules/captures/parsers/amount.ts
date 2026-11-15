@@ -14,6 +14,28 @@ export function parseBrlCents(raw: string): number | null {
   return Number(whole) * 100 + Number(match[2] ?? '0');
 }
 
+/** Two decimals after a point, optional comma thousands: "10.00", "1234.56", "1,234.56". */
+const DOT_DECIMAL = /^(\d{1,3}(?:,\d{3})+|\d{1,12})\.(\d{2})$/;
+
+/**
+ * Integer cents of an amount written with a decimal point, as the Mercado Pago app writes the Pix it sent
+ * ("R$ 10.00", seen on 15/11/2026). Only the unambiguous shape is read: exactly two decimals after the point. "1.000"
+ * (Brazilian thousands) and "10.5" are null here, so the two ways of writing never take each other's text.
+ */
+export function parseDotDecimalCents(raw: string): number | null {
+  const match = DOT_DECIMAL.exec(raw.trim());
+  if (!match) return null;
+  const whole = match[1]!.replace(/,/g, '');
+  if (whole.length > 12) return null;
+  return Number(whole) * 100 + Number(match[2]);
+}
+
+/** Positive cents of either way of writing: Brazilian ("1.234,56", "15") or decimal point ("1,234.56", "10.00"). */
+export function parseAnyPositiveCents(raw: string): number | null {
+  const cents = parseDotDecimalCents(raw) ?? parseBrlCents(raw);
+  return cents !== null && cents > 0 ? cents : null;
+}
+
 /** The same reading in reais (cents / 100). */
 export function parseBrlAmount(raw: string): number | null {
   const cents = parseBrlCents(raw);
