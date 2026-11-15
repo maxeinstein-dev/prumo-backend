@@ -180,6 +180,7 @@ vi.mock('../transactions/transactions.service.js', () => ({
   createTransfer: vi.fn(async (input: Row, hooks?: { inTransaction?: (tx: unknown, created: { id: string }) => Promise<void> }) => {
     store.createCalls += 1;
     await Promise.resolve();
+    store.beforeCreate?.();
     if (input.fromAccountId === input.toAccountId) throw Object.assign(new Error('Cannot transfer to the same account'), { statusCode: 400, code: 'BAD_REQUEST' });
     if (input.sourceRef && store.transactions.some((t) => t.householdId === input.householdId && t.sourceRef === input.sourceRef)) {
       throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
@@ -1024,6 +1025,15 @@ describe('own transfer between two captures', () => {
     expect((await transfer()).statusCode).toBe(409);
     expect(store.transactions).toHaveLength(0);
     expect(store.captures[0]!.status).toBe('PENDING');
+  });
+
+  it('a side dismissed while the transfer is being written undoes everything: no transfer, both stay as they were', async () => {
+    outflow(1);
+    income(2);
+    store.beforeCreate = () => { store.captures[1]!.status = 'DISMISSED'; };
+    expect((await transfer()).statusCode).toBe(409);
+    expect(store.transactions).toHaveLength(0);
+    expect(store.captures.map((c) => c.status)).toEqual(['PENDING', 'DISMISSED']);
   });
 
   it('refuses two captures that are not an outflow and an own income of the same amount (400)', async () => {
