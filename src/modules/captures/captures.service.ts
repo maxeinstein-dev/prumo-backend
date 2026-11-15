@@ -15,9 +15,28 @@ function statusOfReading(parsed: ParsedCapture | null): 'PENDING' | 'DISMISSED' 
   return parsed?.ignore ? 'DISMISSED' : 'PENDING';
 }
 
+/**
+ * A new spending the server understood, answered to the phone so it can show a local notice ("Compra de R$ X
+ * capturada: confirmar?", P01 D3). The phone only formats it: what counts as a spending and its value come from here.
+ */
+export interface CaptureNotice {
+  kind: ParsedCapture['kind'];
+  amountCents: number;
+  merchant?: string;
+}
+
 export interface CaptureResult {
   dedupKey: string;
   status: 'created' | 'duplicate';
+  /** Only on a `created` item whose reading is a spending with a value; absent otherwise. */
+  notice?: CaptureNotice;
+}
+
+/** A spending worth a notice: an EXPENSE reading with a positive value; never a notice (IGNORE) or an income. */
+export function noticeOfReading(parsed: ParsedCapture | null): CaptureNotice | undefined {
+  if (!parsed || parsed.ignore || parsed.type !== 'EXPENSE') return undefined;
+  if (parsed.amountCents === null || !(parsed.amountCents > 0)) return undefined;
+  return { kind: parsed.kind, amountCents: parsed.amountCents, ...(parsed.merchant ? { merchant: parsed.merchant } : {}) };
 }
 
 const MINUTE_MS = 60_000;
@@ -45,7 +64,8 @@ export async function ingestCaptures(
 ): Promise<CaptureResult[]> {
   const prepared = items.map((item) => {
     const postedAt = new Date(item.postedAt);
-    return { item, postedAt, dedupKey: computeDedupKey({ ...item, postedAt }) };
+    const parsed = parseCapture({ package: item.package, title: item.title ?? null, text: item.text });
+    return { item, postedAt, parsed, dedupKey: computeDedupKey({ ...item, postedAt }) };
   });
 
   // Repeats inside the batch: only the first occurrence is inserted (a repeat in one INSERT would be skipped
@@ -56,11 +76,10 @@ export async function ingestCaptures(
   }
 
   const inserted = await prisma.capturedNotification.createManyAndReturn({
-    data: [...firstByKey.values()].map(({ item, postedAt, dedupKey }) => {
+    data: [...firstByKey.values()].map(({ item, postedAt, parsed, dedupKey }) => {
       // The raw text is stored either way; a reading adds `parsed`, and a notice (limit, promotion) is stored DISMISSED
       // so the user can still restore it. The version is stored even when nothing was understood: reparse retries
       // only what an older parser read.
-      const parsed = parseCapture({ package: item.package, title: item.title ?? null, text: item.text });
       return {
         householdId: scope.householdId,
         userId: scope.userId,
@@ -80,10 +99,12 @@ export async function ingestCaptures(
   const created = new Set(inserted.map((row) => row.dedupKey));
 
   const reported = new Set<string>();
-  return prepared.map(({ dedupKey }) => {
+  return prepared.map(({ dedupKey, parsed }) => {
     const isCreator = created.has(dedupKey) && !reported.has(dedupKey);
     reported.add(dedupKey);
-    return { dedupKey, status: isCreator ? ('created' as const) : ('duplicate' as const) };
+    if (!isCreator) return { dedupKey, status: 'duplicate' as const };
+    const notice = noticeOfReading(parsed);
+    return { dedupKey, status: 'created' as const, ...(notice ? { notice } : {}) };
   });
 }
 

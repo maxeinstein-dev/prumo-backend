@@ -480,6 +480,29 @@ describe('POST /captures reads the notification', () => {
     expect(store.captures[1]).toMatchObject({ status: 'PENDING', parsed: { kind: 'PIX_IN', type: 'INCOME', amountCents: 1000, warning: 'POSSIBLE_OWN_TRANSFER' } });
   });
 
+  it('answers a notice for a new spending it understood, so the phone can warn the user (P01 D3)', async () => {
+    const token = await newToken();
+    const res = await post(token, { items: [item(purchase)] });
+
+    const [first] = res.json().data.results;
+    expect(first.notice).toEqual({ kind: 'CARD_PURCHASE', amountCents: 3750, merchant: 'PADARIA ZETA' });
+  });
+
+  it('answers no notice for a duplicate, an income, a notice or a text it did not understand (P01 D3)', async () => {
+    const token = await newToken();
+    await post(token, { items: [item(purchase)] });
+    const res = await post(token, { items: [
+      item(purchase),
+      item({ package: 'com.mercadopago.wallet', title: 'Seu dinheiro já está disponível', text: 'Você depositou R$ 10,00 via Pix e o valor já está rendendo na sua conta.' }),
+      item({ package: NU, title: 'Promoção', text: 'Ganhe um cupom agora.' }),
+      item({ package: NU, title: 'Novidade', text: 'Você ganhou R$ 20,00 de cashback.' }),
+    ] });
+
+    const results = res.json().data.results;
+    expect(results.map((r: { status: string }) => r.status)).toEqual(['duplicate', 'created', 'created', 'created']);
+    for (const result of results) expect(result).not.toHaveProperty('notice');
+  });
+
   it('answers 200 and keeps the capture PENDING without parsed when the text is not understood, marking the version that tried', async () => {
     const token = await newToken();
     const res = await post(token, { items: [item({ package: NU, title: 'Novidade', text: 'Você ganhou R$ 20,00 de cashback.' })] });
