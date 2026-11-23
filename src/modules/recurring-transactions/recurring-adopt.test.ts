@@ -82,18 +82,17 @@ describe('executeRecurringTransaction adopts an imported transaction of the mont
     expect(rowById('transaction', tx.id).recurringTransactionId).toBeNull();
   });
 
-  it('does not adopt a hand-typed row (no sourceRef), another account, another month, or one already linked', async () => {
+  it('does not adopt another account, a row too early or in the next month, a row already linked or another household', async () => {
     const rec = seedRecurrence({ householdId: HH, accountId: ACC, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-10-05' });
     const other = seedRecurrence({ householdId: HH, accountId: ACC, description: 'Outro', amount: 1, nextRunAt: '2026-12-01' });
-    const typed = imported({ description: 'Seguro Alfa', sourceRef: null });
     const elsewhere = imported({ description: 'Seguro Alfa', sourceRef: 'ofx:2', accountId: OTHER_ACC });
-    const lastMonth = imported({ description: 'Seguro Alfa', sourceRef: 'ofx:3', date: '2026-09-30' });
+    const tooEarly = imported({ description: 'Seguro Alfa', sourceRef: 'ofx:3', date: '2026-09-27' });
     const nextMonth = imported({ description: 'Seguro Alfa', sourceRef: 'ofx:4', date: '2026-11-01' });
     const taken = imported({ description: 'Seguro Alfa', sourceRef: 'ofx:5', recurringTransactionId: other.id });
     const foreign = imported({ description: 'Seguro Alfa', sourceRef: 'ofx:6', householdId: 'hh-2' });
     const result = await run(rec.id);
     expect(result.skipped).toBe(false);
-    for (const t of [typed, elsewhere, lastMonth, nextMonth, foreign]) expect(rowById('transaction', t.id).recurringTransactionId).toBeNull();
+    for (const t of [elsewhere, tooEarly, nextMonth, foreign]) expect(rowById('transaction', t.id).recurringTransactionId).toBeNull();
     expect(rowById('transaction', taken.id).recurringTransactionId).toBe(other.id);
   });
 
@@ -147,5 +146,81 @@ describe('executeRecurringTransaction adopts an imported transaction of the mont
     const result = await run(rec.id, new Date(2026, 9, 12));
     expect(result.skipped).toBe(false);
     expect(rowById('transaction', tx.id).recurringTransactionId).toBeNull();
+  });
+});
+
+describe('executeRecurringTransaction recognizes the occurrence already entered by another path', () => {
+  // The reported case: a monthly card recurrence due on the 24th whose charge was captured from the bank notification on
+  // the 23rd and confirmed. Invented names and amounts.
+  const card = () => seedAccount({ id: 'acc-card', householdId: HH, name: 'Cartao Teste', type: 'CREDIT', balance: 0 });
+  const due = new Date(2026, 10, 24);
+
+  it('links the confirmed capture of the day before instead of creating a second charge', async () => {
+    card();
+    const rec = seedRecurrence({ householdId: HH, accountId: 'acc-card', description: 'Seguro Beta', amount: 130.31, nextRunAt: '2026-11-24', aliases: ['Pg *Betaseg Conecta'] });
+    const capture = imported({ accountId: 'acc-card', description: 'Pg *Betaseg Conecta', amount: 130.31, date: '2026-11-23', sourceRef: 'notif:abc' });
+    const result = await run(rec.id, due);
+    expect(result.skipped).toBe(true);
+    expect(rowsOf('transaction')).toHaveLength(1);
+    expect(rowById('transaction', capture.id).recurringTransactionId).toBe(rec.id);
+    expect(rowById('recurringTransaction', rec.id)).toMatchObject({ nextRunAt: '2026-12-24', lastRunDate: '2026-11-24' });
+  });
+
+  it('recognizes a capture whose name only resembles the alias when the amount is close', async () => {
+    card();
+    const rec = seedRecurrence({ householdId: HH, accountId: 'acc-card', description: 'Seguro Beta', amount: 130.31, nextRunAt: '2026-11-24', aliases: ['Pg *Betaseg Conecta'], followLastAmount: true });
+    const capture = imported({ accountId: 'acc-card', description: 'BETASEG CONECTA', amount: 133.9, date: '2026-11-23', sourceRef: 'notif:abc' });
+    const result = await run(rec.id, due);
+    expect(result.skipped).toBe(true);
+    expect(rowsOf('transaction')).toHaveLength(1);
+    expect(rowById('transaction', capture.id)).toMatchObject({ recurringTransactionId: rec.id, amount: 133.9, description: 'BETASEG CONECTA' });
+  });
+
+  it('a resembling name with a distant amount is not the occurrence: it is created', async () => {
+    card();
+    const rec = seedRecurrence({ householdId: HH, accountId: 'acc-card', description: 'Seguro Beta', amount: 130.31, nextRunAt: '2026-11-24', aliases: ['Pg *Betaseg Conecta'] });
+    const other = imported({ accountId: 'acc-card', description: 'Betaseg Conecta', amount: 250, date: '2026-11-23', sourceRef: 'notif:abc' });
+    const result = await run(rec.id, due);
+    expect(result.skipped).toBe(false);
+    expect(rowsOf('transaction')).toHaveLength(2);
+    expect(rowById('transaction', other.id).recurringTransactionId).toBeNull();
+  });
+
+  it('adopts a hand-typed row with the recurrence name', async () => {
+    const rec = seedRecurrence({ householdId: HH, accountId: ACC, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-10-05' });
+    const typed = imported({ description: 'Seguro Alfa', sourceRef: null, amount: 90 });
+    const result = await run(rec.id);
+    expect(result.skipped).toBe(true);
+    expect(rowsOf('transaction')).toHaveLength(1);
+    expect(rowById('transaction', typed.id).recurringTransactionId).toBe(rec.id);
+  });
+
+  it('adopts a charge entered up to 7 days before the due day, even in the previous month', async () => {
+    const rec = seedRecurrence({ householdId: HH, accountId: ACC, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-11-03' });
+    const early = imported({ description: 'Seguro Alfa', sourceRef: 'ofx:early', date: '2026-10-28' });
+    const result = await run(rec.id, new Date(2026, 10, 3));
+    expect(result.skipped).toBe(true);
+    expect(rowById('transaction', early.id).recurringTransactionId).toBe(rec.id);
+    expect(rowById('recurringTransaction', rec.id)).toMatchObject({ nextRunAt: '2026-12-03' });
+  });
+
+  it('does not take the charge of another recurrence with a resembling name', async () => {
+    card();
+    const rec = seedRecurrence({ householdId: HH, accountId: 'acc-card', description: 'Seguro Beta', amount: 130, nextRunAt: '2026-11-24', aliases: ['Betaseg'] });
+    seedRecurrence({ householdId: HH, accountId: 'acc-card', description: 'Betaseg Residencial', amount: 130, nextRunAt: '2026-12-20' });
+    const theirs = imported({ accountId: 'acc-card', description: 'Betaseg Residencial', amount: 130, date: '2026-11-22', sourceRef: 'notif:x' });
+    const result = await run(rec.id, due);
+    expect(result.skipped).toBe(false);
+    expect(rowById('transaction', theirs.id).recurringTransactionId).toBeNull();
+  });
+
+  it('nothing entered: the occurrence is created as before', async () => {
+    card();
+    const rec = seedRecurrence({ householdId: HH, accountId: 'acc-card', description: 'Seguro Beta', amount: 130.31, nextRunAt: '2026-11-24', aliases: ['Pg *Betaseg Conecta'] });
+    imported({ accountId: 'acc-card', description: 'Padaria Gama', amount: 130.31, date: '2026-11-23', sourceRef: 'notif:p' });
+    const result = await run(rec.id, due);
+    expect(result.skipped).toBe(false);
+    expect(linked(rec.id)).toHaveLength(1);
+    expect(linked(rec.id)[0]).toMatchObject({ description: 'Seguro Beta', date: '2026-11-24' });
   });
 });
