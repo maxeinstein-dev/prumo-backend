@@ -186,6 +186,21 @@ describe('executeRecurringTransaction recognizes the occurrence already entered 
     expect(rowById('transaction', other.id).recurringTransactionId).toBeNull();
   });
 
+  it.each([
+    ['confirmed capture', 'notif:abc'],
+    ['card statement OFX', 'ofx:FIT-9'],
+    ['sheet row', 'maxfin:2026-11:7'],
+    ['hand-typed', null],
+  ])('adopts the charge of the day before whatever its origin: %s', async (_label, sourceRef) => {
+    card();
+    const rec = seedRecurrence({ householdId: HH, accountId: 'acc-card', description: 'Seguro Beta', amount: 130.31, nextRunAt: '2026-11-24', aliases: ['Pg *Betaseg Conecta'] });
+    const row = imported({ accountId: 'acc-card', description: 'Pg *Betaseg Conecta', amount: 130.31, date: '2026-11-23', sourceRef });
+    const result = await run(rec.id, due);
+    expect(result.skipped).toBe(true);
+    expect(rowsOf('transaction')).toHaveLength(1);
+    expect(rowById('transaction', row.id).recurringTransactionId).toBe(rec.id);
+  });
+
   it('adopts a hand-typed row with the recurrence name', async () => {
     const rec = seedRecurrence({ householdId: HH, accountId: ACC, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-10-05' });
     const typed = imported({ description: 'Seguro Alfa', sourceRef: null, amount: 90 });
