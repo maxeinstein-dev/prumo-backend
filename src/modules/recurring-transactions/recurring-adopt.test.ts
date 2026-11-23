@@ -44,9 +44,9 @@ describe('executeRecurringTransaction adopts an imported transaction of the mont
     expect(rowById('recurringTransaction', rec.id)).toMatchObject({ nextRunAt: '2026-11-05', lastRunDate: '2026-10-05' });
   });
 
-  it('a different bank name without alias creates the occurrence as before', async () => {
+  it('an unrelated bank name without alias creates the occurrence as before', async () => {
     const rec = seedRecurrence({ householdId: HH, accountId: ACC, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-10-05' });
-    const tx = imported();
+    const tx = imported({ description: 'Pg *Conecta Seguros' });
     const result = await run(rec.id);
     expect(result.skipped).toBe(false);
     expect(rowsOf('transaction')).toHaveLength(2);
@@ -109,7 +109,7 @@ describe('executeRecurringTransaction adopts an imported transaction of the mont
 
   it('does not use the "Planilha:" note as a name', async () => {
     const rec = seedRecurrence({ householdId: HH, accountId: ACC, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-10-05' });
-    const tx = imported({ notes: 'Planilha: Seguro Alfa' });
+    const tx = imported({ description: 'Pg *Conecta Seguros', notes: 'Planilha: Seguro Alfa' });
     expect((await run(rec.id)).skipped).toBe(false);
     expect(rowById('transaction', tx.id).recurringTransactionId).toBeNull();
   });
