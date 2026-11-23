@@ -52,8 +52,9 @@ describe('rankAdoptable', () => {
   });
 
   it('never takes a similar name that is exactly the name of another recurrence', () => {
-    const foreignNames = recurrenceNameKeys('Alfa Seguros Conecta Residencial', []);
-    expect(rankAdoptable([row('a', 'Alfa Seguros Conecta Residencial', 90, '2026-10-24')], { ...base, foreignNames })).toEqual([]);
+    const foreignNames = recurrenceNameKeys('Alfa Seguros Conecta', []);
+    expect(rankAdoptable([row('a', 'Alfa Seguros Conecta', 90, '2026-10-24')], base)).toEqual(['a']); // similar to the alias…
+    expect(rankAdoptable([row('a', 'Alfa Seguros Conecta', 90, '2026-10-24')], { ...base, foreignNames })).toEqual([]); // …but exactly another recurrence's name
   });
 
   it('prefers the same name, then the closest day, then the closest amount', () => {
