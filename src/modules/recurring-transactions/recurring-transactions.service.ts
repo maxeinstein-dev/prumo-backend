@@ -12,6 +12,7 @@ import { addMonths, monthOfDate } from '../../shared/utils/competence.js';
 import { addMonthsClamped, anchorDayOf, dayString, localDate, monthBoundsUtc } from './recurring-dates.js';
 import { normalizeDescription } from './detect.js';
 import { recurrenceNameKeys } from './recurring-aliases.js';
+import { adoptWindowStart, rankAdoptable } from './recurring-adopt-match.js';
 import { FOLLOW_LOOKAHEAD_DAYS, followLastAmountInTx, plusDays } from './recurring-follow.js';
 import { applyDefaultSharesInTx, assertDefaultSharesUsable, loadDefaultShares, replaceDefaultSharesInTx } from './recurring-default-shares.js';
 import type {
@@ -649,35 +650,47 @@ export async function executeRecurringTransaction(
         return { transaction: existing, nextRunAt, skipped: true as boolean };
       }
 
-      // The month holds no occurrence of this recurrence, but an import may already have brought the charge (sheet,
-      // card statement, notification) without the link. Adopt the oldest such row instead of creating a duplicate:
-      // same household and account, same type, inside the month, unlinked, imported (has a sourceRef; a hand-typed
-      // row is never taken), and a normalized description equal to the recurrence name or one of its aliases. The
-      // amount is not a criterion and the row is not changed apart from the link. The link is conditional (still
-      // unlinked): a writer that does not take this lock cannot be adopted twice, and the next candidate is tried.
+      // The month holds no occurrence of this recurrence, but another path may already have entered the charge without
+      // the link (a confirmed notification capture, the card statement, the sheet, or a hand-typed row). Adopt it
+      // instead of creating a duplicate: same household and account, same type, unlinked, dated from a few days before
+      // the due day (even in the previous month) to the end of its month, and the same name or a similar one with a
+      // close amount (rules in recurring-adopt-match.ts). The row is not changed apart from the link. The link is
+      // conditional (still unlinked): a writer that does not take this lock cannot be adopted twice, and the next
+      // candidate is tried.
       const names = recurrenceNameKeys(recurring.description, recurring.aliases);
       if (names.size > 0) {
-        const candidates = await tx.transaction.findMany({
+        const dueDay = dayString(transactionDate);
+        const rows = await tx.transaction.findMany({
           where: {
             householdId,
             accountId: recurring.accountId,
             type: transactionType,
             recurringTransactionId: null,
-            sourceRef: { not: null },
-            date: { gte: start, lt: end },
+            date: { gte: new Date(`${adoptWindowStart(dueDay)}T00:00:00.000Z`), lt: end },
           },
           orderBy: [{ date: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
-          select: { id: true, description: true },
+          select: { id: true, description: true, amount: true, date: true },
         });
-        for (const candidate of candidates) {
-          if (!names.has(normalizeDescription(candidate.description))) continue;
+        const others = rows.length
+          ? await tx.recurringTransaction.findMany({
+              where: { householdId, isActive: true, id: { not: recurring.id } },
+              select: { description: true, aliases: true },
+            })
+          : [];
+        const foreignNames = new Set<string>();
+        for (const other of others) for (const key of recurrenceNameKeys(other.description, other.aliases)) if (!names.has(key)) foreignNames.add(key);
+        const ranked = rankAdoptable(
+          rows.map((r) => ({ id: r.id, description: r.description, amount: Number(r.amount.toString()), date: dayString(r.date) })),
+          { names, expectedAmounts: [fullAmount, occurrenceAmount], dueDay, foreignNames },
+        );
+        for (const candidateId of ranked) {
           const linked = await tx.transaction.updateMany({
-            where: { id: candidate.id, householdId, recurringTransactionId: null },
+            where: { id: candidateId, householdId, recurringTransactionId: null },
             data: { recurringTransactionId: recurring.id },
           });
           if (linked.count !== 1) continue;
           const adopted = await tx.transaction.findFirst({
-            where: { id: candidate.id, householdId },
+            where: { id: candidateId, householdId },
             include: { account: { select: { id: true, name: true, type: true } } },
           });
           // P19: the adopted row takes the default split, unless it was already split by hand

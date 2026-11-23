@@ -31,7 +31,7 @@ import { calculateNextRunDate, executeRecurringTransaction, occurrenceDateFor } 
 /**
  * Process all due recurring transactions
  */
-async function processDueRecurringTransactions() {
+export async function processDueRecurringTransactions() {
   const today = new Date();
   today.setHours(0, 0, 0, 0); // Normalize to start of day
 
