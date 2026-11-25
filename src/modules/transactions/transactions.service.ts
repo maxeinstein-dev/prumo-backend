@@ -556,6 +556,67 @@ export async function createTransaction(
   return convertedResult;
 }
 
+/** One installment (2..n) of a purchase on a credit card, as createInstallmentRowsInTx writes it. */
+export interface InstallmentRowInput {
+  installmentNumber: number;
+  /** Integer cents: money is added up in cents, never as floats. */
+  amountCents: number;
+  date: Date;
+  sourceRef: string;
+}
+
+/**
+ * Writes the further installments of a purchase on a credit card, INSIDE the caller's database transaction (the hook
+ * of createTransaction, which wrote installment 1): P22, a capture confirmed in installments. Each row is a paid
+ * expense like the ones POST /transactions/batch writes for the form's installments, and the card balance and limit
+ * move through the same helpers (calculateBalanceChange, updateBalanceForNormalTransaction, recalculateCreditCardLimit),
+ * once, by the sum of the rows in cents.
+ * @returns the ids of the rows created, in the order of `rows`
+ */
+export async function createInstallmentRowsInTx(
+  tx: Prisma.TransactionClient,
+  input: {
+    householdId: string;
+    account: { id: string; type: string };
+    categoryName: string;
+    description?: string;
+    notes?: string;
+    installmentId: string;
+    totalInstallments: number;
+    rows: InstallmentRowInput[];
+  },
+): Promise<string[]> {
+  const ids: string[] = [];
+  let totalCents = 0;
+  for (const row of input.rows) {
+    const created = await tx.transaction.create({
+      data: {
+        householdId: input.householdId,
+        type: TransactionType.EXPENSE,
+        accountId: input.account.id,
+        categoryName: input.categoryName,
+        amount: new Prisma.Decimal(row.amountCents).div(100),
+        description: input.description,
+        date: row.date,
+        notes: input.notes,
+        paid: true,
+        sourceRef: row.sourceRef,
+        installmentId: input.installmentId,
+        installmentNumber: row.installmentNumber,
+        totalInstallments: input.totalInstallments,
+      },
+      select: { id: true },
+    });
+    ids.push(created.id);
+    totalCents += row.amountCents;
+  }
+  if (totalCents > 0) {
+    await updateBalanceForNormalTransaction(tx, input.account.id, calculateBalanceChange(totalCents / 100, false, input.account.type));
+    if (input.account.type === AccountType.CREDIT) await recalculateCreditCardLimit(tx, input.account.id);
+  }
+  return ids;
+}
+
 /**
  * Get transaction by ID
  */

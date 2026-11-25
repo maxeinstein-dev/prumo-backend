@@ -58,9 +58,15 @@ export const captureActionQuerySchema = z.object(householdQuery);
 
 /**
  * What the client may correct when it confirms a capture. A subset of createTransactionSchema on purpose: only plain
- * INCOME/EXPENSE rows (no transfers, allocations, splits, recurrences, installments) and no sourceRef, which the
- * server sets from the capture. Unknown keys are a 400 instead of being dropped, so nothing the user typed is lost.
+ * INCOME/EXPENSE rows (no transfers, allocations, splits, recurrences) and no sourceRef, which the server sets from the
+ * capture. Unknown keys are a 400 instead of being dropped, so nothing the user typed is lost.
+ *
+ * P22: `installments` (2..24) turns the confirmation into a purchase in installments on a credit card; `amount` is then
+ * the TOTAL of the purchase and `installmentAmount`, when the user corrected it, the value of each installment.
  */
+export const MIN_CAPTURE_INSTALLMENTS = 2;
+export const MAX_CAPTURE_INSTALLMENTS = 24;
+
 export const confirmCaptureSchema = z.object({
   type: z.enum(['INCOME', 'EXPENSE']).optional(),
   accountId: z.string().uuid(),
@@ -76,7 +82,13 @@ export const confirmCaptureSchema = z.object({
     strategy: z.enum(['percent', 'exact', 'equal']),
     entries: z.array(shareEntrySchema).min(1).max(MAX_SPLIT_ENTRIES),
   }).strict().optional(),
-}).strict();
+  installments: z.coerce.number().int().min(MIN_CAPTURE_INSTALLMENTS).max(MAX_CAPTURE_INSTALLMENTS).optional(),
+  installmentAmount: z.coerce.number().positive('installmentAmount must be positive').optional(),
+}).strict().superRefine((body, ctx) => {
+  if (body.installmentAmount !== undefined && body.installments === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['installmentAmount'], message: 'installmentAmount needs installments' });
+  }
+});
 
 /** POST /captures/transfer: an outflow and an own income of the same Pix, confirmed as one transfer. */
 export const confirmTransferSchema = z.object({
