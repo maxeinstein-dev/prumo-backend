@@ -11,7 +11,7 @@ const EXCEPTIONS: Record<string, string> = {
   'modules/categories/categories.merge.service.ts::run': 'the merge itself: it holds the category rows FOR UPDATE and re-points the references',
   'modules/accounts/accounts.service.ts::transferBetweenAccounts': 'writes the fixed system names TRANSFER/ALLOCATION, never a custom id',
   'modules/accounts/accounts.service.ts::adjustBalance': 'writes the system names OTHER_INCOME/OTHER_EXPENSES by sign, never a custom id',
-  'modules/transactions/transactions.service.ts::payCreditCardInvoice': 'writes the fixed system name OTHER_EXPENSES',
+  'modules/transactions/credit-card-invoice.service.ts::payCreditCardInvoice': 'writes the fixed system name OTHER_EXPENSES',
   'modules/transactions/transactions.service.ts::createTransfer': 'writes the fixed system name TRANSFER',
   'modules/transactions/transactions.service.ts::createAllocation': 'writes the fixed system name ALLOCATION',
   'modules/transactions/transactions.service.ts::createDeallocation': 'writes the fixed system name ALLOCATION',
