@@ -48,6 +48,7 @@ export function scanLocalDates(source: string): Counts {
 const ALLOWED: Record<string, { counts: Partial<Counts>; why: string }> = {
   'src/modules/accounts/accounts.schema.ts': { counts: { localDate: 2 }, why: 'local calendar day of an adjustment date: validation and "today" (written through localDateSchema semantics)' },
   'src/modules/accounts/accounts.service.ts': { counts: { localDate: 1 }, why: 'default adjustment date, the local day, written like every other date the app stores' },
+  'src/modules/captures/capture-installments.ts': { counts: { localDate: 2 }, why: 'dates of the installments written like the normal installment form (local midnight through localDateSchema semantics, never a bound); one daysInMonth count' },
   'src/modules/dashboard/dashboard.service.ts': { counts: { localDate: 1 }, why: 'month label only (toLocaleString)' },
   'src/modules/notifications/budget-notifications.service.ts': { counts: { endOfDay: 1, localDate: 2 }, why: 'bounds of the notifications createdAt, a timestamp (an instant), not a @db.Date column' },
   'src/modules/recurring-transactions/recurring-dates.ts': { counts: { localDate: 2 }, why: 'localDate() is the local-midnight value the services write; daysInMonth only counts days' },

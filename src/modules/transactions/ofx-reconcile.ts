@@ -53,6 +53,7 @@ import { fitidToken, type CardOfxStatementLine } from './parsers/ofx-card.parser
 import { normalizeLabel } from './maxfin-import.helpers.js';
 import { recurrenceNameKeys } from '../recurring-transactions/recurring-aliases.js';
 import { normalizeDescription } from '../recurring-transactions/detect.js';
+import { isCaptureFutureRef } from '../captures/capture-installments.js';
 
 export type ReconcileLine = CardOfxStatementLine;
 
@@ -480,6 +481,31 @@ function linesNote(states: LineState[]): string {
 // Reconciliation
 // ---------------------------------------------------------------------------
 
+/**
+ * Tolerance of a stored future installment against the statement line of the same N/M. One cent for the futures the OFX
+ * import or the sheet made. A future of a purchase confirmed from a capture (`notif:<dedupKey>:f<i>`, P22) answers like
+ * installment 1 of that plan: up to n - 1 cents (the remainder of the division, which a bank may put on any
+ * installment), at least 1. The bank value then prevails (consume-future moves balance and limit).
+ */
+function futureToleranceCents(future: RowState, total: number): number {
+  return isCaptureFutureRef(future.row.sourceRef) ? Math.max(FUTURE_TOLERANCE_CENTS, total - 1) : FUTURE_TOLERANCE_CENTS;
+}
+
+/**
+ * P22: the capture divides a purchase in n installments leaving the odd cents on installment 1 (100,00 in 3x = 33,34 +
+ * 33,33 + 33,33), while the bank may charge installment 1 as the plain share (33,33), or the user may have corrected
+ * the stored value a little. Only installment 1 of a plan the capture created (installmentId = its own sourceRef) is
+ * allowed to differ from the line of installment 1/n of the same n, by up to n - 1 cents (the remainder of the
+ * division), at least 1. Everything else (single notifications, other installments) stays exact: returns 0.
+ */
+function capturedFirstInstallmentTolerance(row: RowState, state: LineState): number {
+  const inst = state.line.installment;
+  const stored = row.installment;
+  if (!inst || !stored || inst.number !== 1 || stored.number !== 1 || inst.total !== stored.total) return 0;
+  if (!row.row.installmentId || row.row.installmentId !== row.row.sourceRef) return 0;
+  return Math.max(1, stored.total - 1);
+}
+
 export function reconcileCardOfx(input: ReconcileInput): ReconcileResult {
   const lines: LineState[] = input.lines.map((line, index) => ({
     line,
@@ -806,7 +832,7 @@ export function reconcileCardOfx(input: ReconcileInput): ReconcileResult {
   const futureCandidates = (state: LineState): RowState[] => {
     const inst = state.line.installment!;
     return (futuresByKey.get(`${inst.number}/${inst.total}`) ?? []).filter(
-      (f) => !f.used && Math.abs(f.cents - state.cents) <= FUTURE_TOLERANCE_CENTS,
+      (f) => !f.used && Math.abs(f.cents - state.cents) <= futureToleranceCents(f, inst.total),
     );
   };
   const installmentGroups = new Map<string, LineState[]>();
@@ -992,17 +1018,21 @@ export function reconcileCardOfx(input: ReconcileInput): ReconcileResult {
   // the notification (NOTIF_DAYS_*), closest date first, then words in common. Equal amounts make the pairing a guess,
   // which is harmless (both sides have the same amount, so the card total is right either way) and flagged tieBroken.
   const notifs = rowStates(
-    (input.notifRows ?? []).filter((r) => !linked.has(r.id) && (r.sourceRef ?? '').startsWith(NOTIF_REF_PREFIX)),
+    (input.notifRows ?? []).filter(
+      (r) => !linked.has(r.id) && (r.sourceRef ?? '').startsWith(NOTIF_REF_PREFIX) && !isCaptureFutureRef(r.sourceRef),
+    ),
   );
   if (notifs.length > 0) {
-    const pairsNotif: Array<{ row: RowState; state: LineState; days: number; shared: number }> = [];
+    const pairsNotif: Array<{ row: RowState; state: LineState; days: number; shared: number; diff: number }> = [];
     for (const state of lines) {
       if (state.status !== 'free' || (state.line.kind !== 'purchase' && state.line.kind !== 'refund')) continue;
       for (const row of notifs) {
-        if (row.used || row.row.type !== state.line.type || row.cents !== state.cents) continue;
+        if (row.used || row.row.type !== state.line.type) continue;
+        const diff = Math.abs(row.cents - state.cents);
+        if (diff > 0 && diff > capturedFirstInstallmentTolerance(row, state)) continue;
         const after = signedDayDiff(row.row.date, state.line.date);
         if (after < -NOTIF_DAYS_LINE_BEFORE || after > NOTIF_DAYS_LINE_AFTER) continue;
-        pairsNotif.push({ row, state, days: Math.abs(after), shared: sharedWordCount(row.words, state.words) });
+        pairsNotif.push({ row, state, days: Math.abs(after), shared: sharedWordCount(row.words, state.words), diff });
       }
     }
     const notifsOfLine = new Map<LineState, number>();
@@ -1011,10 +1041,12 @@ export function reconcileCardOfx(input: ReconcileInput): ReconcileResult {
       notifsOfLine.set(state, (notifsOfLine.get(state) ?? 0) + 1);
       linesOfNotif.set(row, (linesOfNotif.get(row) ?? 0) + 1);
     }
-    pairsNotif.sort((a, b) => a.days - b.days || b.shared - a.shared || a.row.index - b.row.index || a.state.index - b.state.index);
+    // An exact amount always goes before a near one (diff is 0 for everything but installment 1 of a captured plan).
+    pairsNotif.sort((a, b) => a.diff - b.diff || a.days - b.days || b.shared - a.shared || a.row.index - b.row.index || a.state.index - b.state.index);
     for (const pair of pairsNotif) {
       if (pair.row.used || pair.state.status !== 'free') continue;
-      propose('enrich-exact', [pair.state], pair.row, {
+      // Installment 1 of a captured plan charged a few cents apart adopts the bank amount (applyNear moves balance and limit).
+      propose(pair.diff > 0 ? 'enrich-near' : 'enrich-exact', [pair.state], pair.row, {
         tieBroken: notifsOfLine.get(pair.state)! > 1 || linesOfNotif.get(pair.row)! > 1,
         result: {
           date: pair.state.line.date,

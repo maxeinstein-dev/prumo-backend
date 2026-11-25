@@ -3,7 +3,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../../shared/errors/index.js';
 import { buildPaginationArgs, createPaginatedResponse } from '../../shared/utils/pagination.js';
-import { createTransaction, createTransfer, getTransactionWithHousehold } from '../transactions/transactions.service.js';
+import { createInstallmentRowsInTx, createTransaction, createTransfer, getTransactionWithHousehold, resolveAccountForTransaction } from '../transactions/transactions.service.js';
 import type { CreateTransactionInput } from '../transactions/transactions.schema.js';
 import { checkNewTransactionSplit, writeNewTransactionSharesInTx } from '../people/shares.service.js';
 import { buildCategoryHints, type CategoryHints } from './capture-category.js';
@@ -13,6 +13,7 @@ import { isAllowedGmailSender } from './parsers/gmail.js';
 import { DUPLICATE_WINDOW_MS, GMAIL_PACKAGE, duplicatesToDismiss, isAppOutflow, isEmailOutflow } from './capture-duplicates.js';
 import type { AccountRuleInput, CaptureItemInput, CaptureStatusValue, CardRuleInput, ConfirmCaptureInput, ConfirmTransferInput } from './captures.schema.js';
 import { readingOf } from './capture-pairing.js';
+import { captureInstallmentPlanId, captureInstallmentRef, installmentAmountsCents, installmentDates } from './capture-installments.js';
 import { TRANSFER_WINDOW_MS, isTransferIn, isTransferOut, ownTransferPairs } from './capture-transfer.js';
 
 /** A notice is dismissed (decided 13/11/2026; "restore" brings it back); anything else waits for the user. */
@@ -337,7 +338,10 @@ export interface ConfirmResult {
   /** false when the capture was already confirmed (nothing was created by this call). */
   created: boolean;
   capture: { id: string; status: CaptureStatusValue; transactionId: string };
+  /** The first installment when the capture was confirmed in installments. */
   transaction: Awaited<ReturnType<typeof getTransactionWithHousehold>>;
+  /** Ids of installments 2..n, only when this call created a purchase in installments. */
+  installmentIds?: string[];
 }
 
 async function confirmedResult(householdId: string, captureId: string, transactionId: string, created: boolean): Promise<ConfirmResult> {
@@ -377,7 +381,8 @@ export async function confirmCapture(
   }
 
   // P19: the split ("Metade com", "É de") is checked before anything is written, and written with the transaction
-  const { shares: split, ...fields } = input;
+  const { shares: split, installments, installmentAmount, ...fields } = input;
+  if (installments !== undefined) return confirmInInstallments(scope, capture, fields, installments, installmentAmount, split);
   // A capture the reader took for a refund ("A compra em X foi estornada") is an income that cancels an expense:
   // it is written as one (explicit INCOME, so the expense category of the purchase does not turn it into an expense)
   // and marked, unless the user turned it into an expense on purpose. The marker is never taken from the client.
@@ -402,6 +407,115 @@ export async function confirmCapture(
       }
     );
     return { created: true, capture: { id: capture.id, status: 'CONFIRMED', transactionId: transaction.id }, transaction };
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
+    return resolveSourceRefConflict(householdId, capture.id, sourceRef, error);
+  }
+}
+
+/**
+ * P22: a capture confirmed as a purchase in `installments` (2..24) on a credit card. `fields.amount` is the TOTAL of the
+ * purchase. Installment 1 is created by createTransaction on the purchase date with the capture's own sourceRef; the
+ * others are written by createInstallmentRowsInTx from the same `inTransaction` hook that claims the capture
+ * (PENDING -> CONFIRMED), so either every installment exists and the capture is confirmed, or nothing is written.
+ * The race of two simultaneous confirms ends exactly as in the single-transaction case: the loser fails on the unique
+ * sourceRef of installment 1 and answers with the winner's.
+ */
+async function confirmInInstallments(
+  scope: { householdId: string; userId: string },
+  capture: Awaited<ReturnType<typeof loadCapture>>,
+  fields: Omit<ConfirmCaptureInput, 'shares' | 'installments' | 'installmentAmount'>,
+  installments: number,
+  installmentAmount: number | undefined,
+  split: ConfirmCaptureInput['shares'],
+): Promise<ConfirmResult> {
+  const { householdId, userId } = scope;
+  if ((capture.parsed as { kind?: unknown } | null)?.kind === 'REFUND' && fields.type !== 'EXPENSE') {
+    throw new BadRequestError('Installments are only for an expense: this capture is a refund');
+  }
+  if (fields.type === 'INCOME') throw new BadRequestError('Installments are only for an expense');
+  if (fields.competenceMonth) {
+    throw new BadRequestError('A purchase in installments has no single reference month: its installments are dated one per month');
+  }
+  // The same resolution createTransaction does: an account of the household, or a personal account of a member who
+  // allowed access (404/403 as in the normal path); then it must still be a credit card.
+  const resolved = await resolveAccountForTransaction(householdId, fields.accountId, userId);
+  if (!resolved || resolved.type !== 'CREDIT') {
+    throw new BadRequestError('Installments are only for a credit card account');
+  }
+  const account = { id: resolved.id, type: resolved.type };
+
+  const amounts = installmentAmountsCents(
+    Math.round(fields.amount * 100),
+    installments,
+    installmentAmount === undefined ? undefined : Math.round(installmentAmount * 100),
+  );
+  if (amounts.some((cents) => cents < 1)) throw new BadRequestError('The amount is too small to be divided in that many installments');
+  if (split) {
+    // Every installment gets the split of ITS value: the first one may be a few cents larger than the others.
+    for (const cents of new Set(amounts)) await checkNewTransactionSplit(prisma, householdId, { type: 'EXPENSE', amountCents: cents }, split);
+  }
+
+  const dates = installmentDates(fields.date, installments);
+  const planId = captureInstallmentPlanId(capture.dedupKey);
+  const sourceRef = captureInstallmentRef(capture.dedupKey, 1);
+  const extraIds: string[] = [];
+  try {
+    const transaction = await createTransaction(
+      {
+        ...fields,
+        // Like the form: an installment of a card is paid (it takes the limit), and the installments have no reference month.
+        paid: true,
+        competenceMonth: null,
+        type: 'EXPENSE',
+        amount: amounts[0]! / 100,
+        date: dates[0]!,
+        householdId,
+        sourceRef,
+        isSplit: false,
+        installmentId: planId,
+        installmentNumber: 1,
+        totalInstallments: installments,
+      } as CreateTransactionInput,
+      userId,
+      {
+        // 24 installments (and a split) are ~100 round trips: far over Prisma's default 5 s on a remote database.
+        transactionOptions: { maxWait: 10_000, timeout: 60_000 },
+        inTransaction: async (tx, created) => {
+          const claimed = await tx.capturedNotification.updateMany({
+            where: { id: capture.id, householdId, status: 'PENDING' },
+            data: { status: 'CONFIRMED', transactionId: created.id },
+          });
+          if (claimed.count !== 1) throw new ConflictError('The capture is no longer pending');
+          if ((created as { type?: string }).type && (created as { type?: string }).type !== 'EXPENSE') {
+            throw new BadRequestError('Installments are only for an expense');
+          }
+          const ids = await createInstallmentRowsInTx(tx, {
+            householdId,
+            account,
+            categoryName: fields.categoryName,
+            description: fields.description,
+            notes: fields.notes,
+            installmentId: planId,
+            totalInstallments: installments,
+            rows: amounts.slice(1).map((amountCents, i) => ({
+              installmentNumber: i + 2,
+              amountCents,
+              date: dates[i + 1]!,
+              sourceRef: captureInstallmentRef(capture.dedupKey, i + 2),
+            })),
+          });
+          extraIds.push(...ids);
+          if (split) {
+            const rows = [created.id, ...ids];
+            for (let i = 0; i < rows.length; i++) {
+              await writeNewTransactionSharesInTx(tx, householdId, rows[i]!, { type: 'EXPENSE', amountCents: amounts[i]! }, split);
+            }
+          }
+        },
+      },
+    );
+    return { created: true, capture: { id: capture.id, status: 'CONFIRMED', transactionId: transaction.id }, transaction, installmentIds: extraIds };
   } catch (error) {
     if (!isUniqueViolation(error)) throw error;
     return resolveSourceRefConflict(householdId, capture.id, sourceRef, error);
