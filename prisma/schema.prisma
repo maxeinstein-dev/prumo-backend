@@ -78,6 +78,8 @@ model Household {
   budgets               Budget[]
   savingsGoals          SavingsGoal[]
   savingsGoalContributions SavingsGoalContribution[]
+  investmentPositions   InvestmentPosition[]
+  investmentMovements   InvestmentMovement[]
   recurringTransactions RecurringTransaction[]
   people                Person[]
   settlements           Settlement[]
@@ -206,6 +208,7 @@ model Account {
   employments           Employment[]
   employmentItems       EmploymentItem[]
   valuations            AccountValuation[]
+  investmentPositions   InvestmentPosition[]
 
   // Indexes
   @@index([householdId])
@@ -489,6 +492,7 @@ model SavingsGoal {
   household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
   account   Account?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
   contributions SavingsGoalContribution[]
+  investmentPositions InvestmentPosition[]
 
   // Indexes
   @@index([householdId])
@@ -1183,4 +1187,76 @@ model MonthClosing {
   @@unique([householdId, month, accountId])
   @@index([householdId, month])
   @@map("month_closings")
+}
+
+enum InvestmentKind {
+  STOCK_EXCHANGE
+  FIXED_INCOME
+}
+
+enum InvestmentIndexer {
+  CDI
+  IPCA
+  SELIC
+  PREFIXED
+}
+
+enum InvestmentMovementType {
+  OPENING
+  BUY
+  SELL
+  INCOME
+}
+
+// A holding inside an INVESTMENT account (P21). Quantity, cost and average price are never stored: they come from the
+// movements (investments.calc.ts). Nothing here creates a Transaction or touches accounts.balance.
+model InvestmentPosition {
+  id            String            @id @default(uuid()) @db.Uuid
+  householdId   String            @map("household_id") @db.Uuid
+  accountId     String            @map("account_id") @db.Uuid
+  kind          InvestmentKind
+  ticker        String?           @db.VarChar(20) // STOCK_EXCHANGE only
+  name          String            @db.VarChar(120)
+  savingsGoalId String?           @map("savings_goal_id") @db.Uuid
+  indexer       InvestmentIndexer? // FIXED_INCOME only
+  rate          Decimal?          @db.Decimal(9, 4) // % of the CDI/Selic, or % a year for IPCA+ and prefixed
+  maturityDate  DateTime?         @map("maturity_date") @db.Date
+  anchorAmount  Decimal?          @map("anchor_amount") @db.Decimal(15, 2) // value the user saw at the broker...
+  anchorDate    DateTime?         @map("anchor_date") @db.Date // ...on this day
+  closedAt      DateTime?         @map("closed_at") @db.Date
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+
+  household   Household            @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  account     Account              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  savingsGoal SavingsGoal?         @relation(fields: [savingsGoalId], references: [id], onDelete: SetNull)
+  movements   InvestmentMovement[]
+
+  @@index([householdId])
+  @@index([accountId])
+  @@index([savingsGoalId])
+  @@map("investment_positions")
+}
+
+// OPENING = what the position already held before the load (no cash). BUY spends, SELL and INCOME bring cash in the broker.
+model InvestmentMovement {
+  id          String                 @id @default(uuid()) @db.Uuid
+  householdId String                 @map("household_id") @db.Uuid
+  positionId  String                 @map("position_id") @db.Uuid
+  date        DateTime               @db.Date
+  type        InvestmentMovementType
+  quantity    Decimal?               @db.Decimal(18, 6)
+  unitPrice   Decimal?               @map("unit_price") @db.Decimal(15, 6)
+  amount      Decimal                @db.Decimal(15, 2)
+  notes       String?                @db.VarChar(255)
+  sourceRef   String?                @map("source_ref") @db.VarChar(120) // stable id of a captured notification: dedup
+  createdAt   DateTime               @default(now()) @map("created_at")
+
+  household Household         @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  position  InvestmentPosition @relation(fields: [positionId], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, sourceRef])
+  @@index([positionId, date])
+  @@index([householdId])
+  @@map("investment_movements")
 }
