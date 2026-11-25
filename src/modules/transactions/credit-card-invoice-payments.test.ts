@@ -298,6 +298,19 @@ describe('payCreditCardInvoice', () => {
     expect(data.amount.toNumber()).toBeCloseTo(5384.98, 2);
   });
 
+  it('writes the payment link in the columns and in the legacy text together when the card id is a uuid', async () => {
+    const UUID_CARD = '22222222-2222-2222-2222-222222222222';
+    accounts.byId[UUID_CARD] = { ...CARD, id: UUID_CARD };
+    store.rows = [{ ...purchase('2026-09-15', 1000), accountId: UUID_CARD }];
+
+    await payCreditCardInvoice({ householdId: CARD.householdId, accountId: UUID_CARD, sourceAccountId: SOURCE.id, month: '2026-10' } as never);
+
+    const data = updates.create.mock.calls[0][0].data;
+    expect(data.attachmentUrl).toBe(`invoice_pay:${UUID_CARD}:2026-9`);
+    expect(data.invoicePaymentAccountId).toBe(UUID_CARD);
+    expect(data.invoicePaymentMonth).toBe('2026-10');
+  });
+
   it('finds a payment made today for the current statement when computing what is still owed', async () => {
     // Paid today (after the 2026-10-01 end of the window) for invoice 2026-10: nothing remains
     store.rows = [purchase('2026-09-15', 1000), payment('2026-10-06', 1000, '2026-10')];

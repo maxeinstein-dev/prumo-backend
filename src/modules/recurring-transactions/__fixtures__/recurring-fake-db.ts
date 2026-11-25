@@ -328,6 +328,8 @@ export interface SeedTx {
   installmentNumber?: number | null;
   totalInstallments?: number | null;
   attachmentUrl?: string | null;
+  invoicePaymentAccountId?: string | null;
+  invoicePaymentMonth?: string | null;
   competenceMonth?: string | null;
 }
 

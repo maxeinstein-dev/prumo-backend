@@ -16,6 +16,7 @@ import { effectiveClosingDay } from '../accounts/closing-day.js';
 import { executeRecurringTransaction } from '../recurring-transactions/recurring-transactions.service.js';
 import { dayString } from '../recurring-transactions/recurring-dates.js';
 import { openingDebtFromMovements } from './credit-card-opening-debt.js';
+import { invoicePaymentColumnsFromTag, invoicePaymentWrite } from './invoice-payment-link.js';
 import { fromCents, invoiceDates, invoiceState, loadInvoiceForecast, toCents } from './credit-card-invoice-forecast.js';
 import { applyTransfer, applyAllocation, applyDeallocation, recalculateCreditCardLimit, updateBalanceForNormalTransaction } from '../../shared/services/balance.service.js';
 import type {
@@ -239,7 +240,7 @@ export async function createTransaction(
         ...(input.installmentNumber && { installmentNumber: input.installmentNumber }),
         ...(input.totalInstallments && { totalInstallments: input.totalInstallments }),
         ...(input.sourceRef && { sourceRef: input.sourceRef }),
-        ...(input.attachmentUrl && { attachmentUrl: input.attachmentUrl }),
+        ...(input.attachmentUrl && { attachmentUrl: input.attachmentUrl, ...invoicePaymentColumnsFromTag(input.attachmentUrl) }),
         ...(competenceMonth && { competenceMonth }),
         ...(isRefund && { isRefund }),
       },
@@ -1004,7 +1005,8 @@ async function updateTransactionOnce(
         ...(input.installmentId !== undefined && { installmentId: input.installmentId }),
         ...(input.installmentNumber !== undefined && { installmentNumber: input.installmentNumber }),
         ...(input.totalInstallments !== undefined && { totalInstallments: input.totalInstallments }),
-        ...(input.attachmentUrl !== undefined && { attachmentUrl: input.attachmentUrl }),
+        // The payment link follows the text: a changed or cleared attachment changes the columns with it
+        ...(input.attachmentUrl !== undefined && { attachmentUrl: input.attachmentUrl, ...invoicePaymentColumnsFromTag(input.attachmentUrl) }),
         ...(input.sourceRef !== undefined && { sourceRef: input.sourceRef }),
         ...(input.competenceMonth !== undefined && { competenceMonth: input.competenceMonth }),
         ...(finalRefund !== existingTransaction.isRefund && { isRefund: finalRefund }),
@@ -2269,7 +2271,9 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
   // Parse month
   const [year, monthNum] = month.split('-').map(Number);
   const monthKey = `${year}-${monthNum - 1}`;
-  const technicalIdentifier = `invoice_pay:${accountId}:${monthKey}`;
+  // The payment link: columns and the legacy text, written together
+  const paymentLink = invoicePaymentWrite(accountId, `${String(year).padStart(4, '0')}-${String(monthNum).padStart(2, '0')}`);
+  const technicalIdentifier = paymentLink.attachmentUrl;
 
   return await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     // 1. Verify credit card account
@@ -2423,7 +2427,7 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         description: description || `Pagamento de fatura - ${month}`,
         date: paymentDate ?? new Date(),
         paid: true,
-        attachmentUrl: technicalIdentifier,
+        ...paymentLink,
       },
     });
 
