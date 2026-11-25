@@ -46,7 +46,6 @@ export function scanLocalDates(source: string): Counts {
 }
 
 const ALLOWED: Record<string, { counts: Partial<Counts>; why: string }> = {
-  'src/jobs/processRecurrences.ts': { counts: { setHours: 2 }, why: 'normalizes "today" and a start date to local midnight to compare days of recurrences, not a column bound' },
   'src/modules/accounts/accounts.schema.ts': { counts: { localDate: 2 }, why: 'local calendar day of an adjustment date: validation and "today" (written through localDateSchema semantics)' },
   'src/modules/accounts/accounts.service.ts': { counts: { localDate: 1 }, why: 'default adjustment date, the local day, written like every other date the app stores' },
   'src/modules/dashboard/dashboard.service.ts': { counts: { localDate: 1 }, why: 'month label only (toLocaleString)' },
