@@ -113,7 +113,7 @@ export async function savingsGoalRoutes(app: FastifyInstance) {
   }, async (request, reply) => {
     const { goalId } = savingsGoalIdParamSchema.parse(request.params);
     const input = contributeSchema.parse(request.body ?? {});
-    const existing = await savingsGoalsService.getSavingsGoal(goalId);
+    const existing = await savingsGoalsService.getSavingsGoal(goalId, { valued: false });
     await requireEditor(request, existing.householdId);
     const data = await contributions.contribute({ goalId, householdId: existing.householdId, ...input });
     return reply.status(201).send({ success: true, data });
@@ -134,7 +134,7 @@ export async function savingsGoalRoutes(app: FastifyInstance) {
   }, async (request, reply) => {
     const { goalId } = savingsGoalIdParamSchema.parse(request.params);
     const query = contributionsQuerySchema.parse(request.query);
-    const existing = await savingsGoalsService.getSavingsGoal(goalId);
+    const existing = await savingsGoalsService.getSavingsGoal(goalId, { valued: false });
     await requireHouseholdMember(request, existing.householdId);
     const data = await contributions.listContributions({ goalId, householdId: existing.householdId, month: query.month });
     return reply.send({ success: true, data });
@@ -158,7 +158,7 @@ export async function savingsGoalRoutes(app: FastifyInstance) {
     },
   }, async (request, reply) => {
     const { goalId, contributionId } = contributionParamsSchema.parse(request.params);
-    const existing = await savingsGoalsService.getSavingsGoal(goalId);
+    const existing = await savingsGoalsService.getSavingsGoal(goalId, { valued: false });
     await requireEditor(request, existing.householdId);
     const data = await contributions.undoContribution({ goalId, householdId: existing.householdId, contributionId });
     return reply.send({ success: true, data });
@@ -288,7 +288,7 @@ export async function savingsGoalRoutes(app: FastifyInstance) {
       const input = updateSavingsGoalSchema.parse(request.body);
 
       // Get goal to verify household access
-      const existingGoal = await savingsGoalsService.getSavingsGoal(goalId);
+      const existingGoal = await savingsGoalsService.getSavingsGoal(goalId, { valued: false });
       await requireEditor(request, existingGoal.householdId);
 
       const goal = await savingsGoalsService.updateSavingsGoal(goalId, input);
@@ -340,7 +340,7 @@ export async function savingsGoalRoutes(app: FastifyInstance) {
       const input = addToSavingsGoalSchema.parse(request.body);
 
       // Get goal to verify household access
-      const existingGoal = await savingsGoalsService.getSavingsGoal(goalId);
+      const existingGoal = await savingsGoalsService.getSavingsGoal(goalId, { valued: false });
       await requireEditor(request, existingGoal.householdId);
 
       const goal = await savingsGoalsService.addToSavingsGoal(
@@ -389,7 +389,7 @@ export async function savingsGoalRoutes(app: FastifyInstance) {
       const { goalId } = savingsGoalIdParamSchema.parse(request.params);
 
       // Get goal to verify household access
-      const existingGoal = await savingsGoalsService.getSavingsGoal(goalId);
+      const existingGoal = await savingsGoalsService.getSavingsGoal(goalId, { valued: false });
       await requireEditor(request, existingGoal.householdId);
 
       const result = await savingsGoalsService.deleteSavingsGoal(goalId);

@@ -5,6 +5,7 @@ const db = vi.hoisted(() => {
     $queryRaw: vi.fn(),
     savingsGoal: { findFirst: vi.fn(), update: vi.fn() },
     savingsGoalContribution: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), delete: vi.fn() },
+    investmentPosition: { findMany: vi.fn().mockResolvedValue([]) },
   };
   return { tx, $transaction: vi.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)), savingsGoalContribution: { findMany: vi.fn() }, savingsGoal: { findFirst: vi.fn() } };
 });

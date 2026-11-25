@@ -4,6 +4,10 @@ const db = vi.hoisted(() => ({
   savingsGoal: { findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn() },
   savingsGoalContribution: { findMany: vi.fn() },
   account: { findFirst: vi.fn(), findMany: vi.fn() },
+  investmentPosition: { findMany: vi.fn().mockResolvedValue([]) },
+  investmentMovement: { findMany: vi.fn().mockResolvedValue([]) },
+  assetQuote: { findMany: vi.fn().mockResolvedValue([]) },
+  indexRate: { findMany: vi.fn().mockResolvedValue([]) },
 }));
 vi.mock('../../shared/db/prisma.js', () => ({ prisma: db }));
 
