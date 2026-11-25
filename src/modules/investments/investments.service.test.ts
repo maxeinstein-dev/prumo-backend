@@ -251,6 +251,24 @@ describe('createPosition', () => {
 });
 
 describe('updatePosition', () => {
+  it('closing a stock position that still holds quantity is refused (the user decided on 25/11/2026)', async () => {
+    db.investmentMovement.findMany.mockResolvedValue([movement('OPENING', '2026-01-10', 10, 1000)]);
+    await expect(updatePosition(position() as never, { closed: true })).rejects.toMatchObject({ statusCode: 400 });
+    expect(db.investmentPosition.update).not.toHaveBeenCalled();
+  });
+  it('closing a stock position sold out is allowed', async () => {
+    db.investmentMovement.findMany.mockResolvedValue([movement('OPENING', '2026-01-10', 10, 1000), movement('SELL', '2026-03-10', 10, 1100)]);
+    await updatePosition(position() as never, { closed: true });
+    expect(db.investmentPosition.update.mock.calls[0]![0].data.closedAt).toBeInstanceOf(Date);
+  });
+  it('closing a fixed income position with an applied amount is refused; after the full redemption it is allowed', async () => {
+    const fixed = position({ kind: 'FIXED_INCOME', ticker: null, indexer: 'CDI', rate: 100 });
+    db.investmentMovement.findMany.mockResolvedValue([movement('OPENING', '2026-01-10', null, 500)]);
+    await expect(updatePosition(fixed as never, { closed: true })).rejects.toMatchObject({ statusCode: 400 });
+    db.investmentMovement.findMany.mockResolvedValue([movement('OPENING', '2026-01-10', null, 500), movement('SELL', '2026-06-10', null, 520)]);
+    await updatePosition(fixed as never, { closed: true });
+    expect(db.investmentPosition.update).toHaveBeenCalledTimes(1);
+  });
   it('closing sets closedAt to today; reopening clears it', async () => {
     await updatePosition(position() as never, { closed: true });
     expect(db.investmentPosition.update.mock.calls[0]![0].data.closedAt).toBeInstanceOf(Date);

@@ -326,6 +326,15 @@ export async function updatePosition(position: PositionRow, input: UpdatePositio
     throw new BadRequestError('Indexer, rate, maturity and anchor are for fixed income only');
   }
   await assertGoal(position.householdId, input.savingsGoalId);
+  // Closing takes the position out of the account's value, so it must be empty first (decided by the user on
+  // 25/11/2026): a stock position sold out, a fixed income position fully redeemed. Otherwise it would vanish from the
+  // net worth with nothing sold.
+  if (input.closed === true && !position.closedAt) {
+    const figures = computePosition(position.kind, (await movementsOf(prisma, position.id)).map(calcOf));
+    if ((figures.quantity ?? 0) > 0 || figures.costCents > 0) {
+      throw new BadRequestError('Sell or redeem the whole position before closing it');
+    }
+  }
 
   const data: Prisma.InvestmentPositionUncheckedUpdateInput = {};
   if (input.name !== undefined) data.name = input.name;
