@@ -586,6 +586,9 @@ export async function createInstallmentRowsInTx(
     rows: InstallmentRowInput[];
   },
 ): Promise<string[]> {
+  // createTransaction (installment 1) already took this lock in the same transaction; taking it again is free and keeps
+  // this writer safe on its own: a merge or delete of a custom category cannot leave an orphan reference.
+  await lockCustomCategory(tx, input.householdId, input.categoryName);
   const ids: string[] = [];
   let totalCents = 0;
   for (const row of input.rows) {

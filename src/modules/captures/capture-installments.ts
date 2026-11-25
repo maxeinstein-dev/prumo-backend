@@ -22,7 +22,7 @@ export function captureInstallmentPlanId(dedupKey: string): string {
 
 /** True for the sourceRef of a future installment of a captured purchase (`notif:<dedupKey>:f<i>`). */
 export function isCaptureFutureRef(sourceRef: string | null | undefined): boolean {
-  return !!sourceRef && /^notif:[0-9a-f]{40}:f\d+$/.test(sourceRef);
+  return !!sourceRef && /^notif:[^:]+:f\d+$/.test(sourceRef);
 }
 
 /**
