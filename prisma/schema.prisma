@@ -365,6 +365,11 @@ model Transaction {
   installmentNumber      Int?            @map("installment_number")
   totalInstallments      Int?            @map("total_installments")
   attachmentUrl          String?         @map("attachment_url")
+  // "This transaction pays the invoice of a card": the card account and the invoice month (calendar 'YYYY-MM'), next to the
+  // legacy marker in attachmentUrl (`invoice_pay:<card>:<year>-<zero-based month>`), which is still written and read.
+  // No relation on purpose: deleting the card must not delete or release the payment. Read through invoice-payment-link.ts.
+  invoicePaymentAccountId String?        @map("invoice_payment_account_id") @db.Uuid
+  invoicePaymentMonth    String?         @map("invoice_payment_month") @db.VarChar(7)
   // Split expense fields
   isSplit                Boolean         @default(false) @map("is_split") // Indica se a transação é dividida entre membros
   // Import provenance: stable id of the source row (e.g. maxfin:2026-10:credit:27, ofx:<fitid>:<hash>). Unique per household
@@ -397,6 +402,7 @@ model Transaction {
   @@index([householdId])
   @@index([householdId, date])
   @@index([householdId, competenceMonth])
+  @@index([householdId, invoicePaymentAccountId])
   @@index([householdId, categoryName])
   @@index([householdId, type])
   @@index([accountId])
