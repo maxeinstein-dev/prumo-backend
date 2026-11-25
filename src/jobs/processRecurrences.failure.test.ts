@@ -65,3 +65,15 @@ describe('processRecurrences job: failures', () => {
     await expect(processDueRecurringTransactions()).resolves.toBeUndefined();
   });
 });
+
+describe('processRecurrences job: today is the UTC day', () => {
+  it('late evening in Sao Paulo (already the next day in UTC) runs the recurrence due on the UTC day', async () => {
+    process.env.TZ = 'America/Sao_Paulo';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // 22:30 on 24/11 in Sao Paulo = 01:30 on 25/11 in UTC
+    vi.setSystemTime(new Date('2026-11-25T01:30:00Z'));
+    const rec = seedRecurrence({ householdId: HH, accountId: ACC, description: 'Conta Beta', amount: 22.22, nextRunAt: '2026-11-25' });
+    await processDueRecurringTransactions();
+    expect(rowById('recurringTransaction', rec.id).lastRunDate).toBe('2026-11-25');
+  });
+});
