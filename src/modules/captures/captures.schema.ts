@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { localDateSchema } from '../../shared/utils/dateSchema.js';
 import { categoryNameSchema } from '../categories/categories.schema.js';
 import { competenceMonthSchema } from '../transactions/transactions.schema.js';
+import { money as investmentMoney, pastOrToday as investmentDay, quantity as investmentQuantity } from '../investments/investments.schema.js';
 
 export const MAX_CAPTURE_ITEMS = 50;
 
@@ -36,6 +37,7 @@ export const CAPTURE_KINDS = ['CARD_PURCHASE', 'PIX_OUT', 'PIX_IN', 'REFUND', 'S
 export const MAX_ACCOUNT_RULES = 100;
 
 export type CaptureStatusValue = (typeof CAPTURE_STATUSES)[number];
+
 export type CaptureKind = (typeof CAPTURE_KINDS)[number];
 
 const householdQuery = { householdId: z.string().uuid().optional() }; // omitted: the personal household
@@ -55,6 +57,37 @@ export const countCapturesQuerySchema = z.object({
 });
 
 export const captureActionQuerySchema = z.object(householdQuery);
+
+/** GET /captures/study: the XP notifications no reader understands (P21 L6), outside the box of captures. */
+export const listStudyQuerySchema = z.object({
+  ...householdQuery,
+  package: z.string().min(1).max(150).optional(),
+  cursor: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+/**
+ * POST /captures/:id/confirm-investment: what the screen sends to turn an XP draft into an investment movement (never a
+ * transaction). The movement type and the ticker come from the capture. `quantity` is required for a purchase and
+ * refused for an income (checked against the capture, in the service). Exactly one of `positionId` (an open position of
+ * that ticker) and `newPosition` (the ticker has none: it is created in the same database transaction).
+ */
+export const confirmInvestmentCaptureSchema = z.object({
+  positionId: z.string().uuid().optional(),
+  newPosition: z.object({
+    accountId: z.string().uuid(),
+    name: z.string().trim().min(1).max(120).optional(),
+    savingsGoalId: z.string().uuid().nullable().optional(),
+  }).strict().optional(),
+  date: investmentDay,
+  amount: investmentMoney,
+  quantity: investmentQuantity.optional(),
+  notes: z.string().trim().max(255).optional(),
+}).strict().refine((body) => (body.positionId === undefined) !== (body.newPosition === undefined), {
+  message: 'Inform exactly one of positionId and newPosition',
+  path: ['positionId'],
+});
+export type ConfirmInvestmentCaptureInput = z.infer<typeof confirmInvestmentCaptureSchema>;
 
 /**
  * What the client may correct when it confirms a capture. A subset of createTransactionSchema on purpose: only plain

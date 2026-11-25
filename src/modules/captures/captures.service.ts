@@ -14,10 +14,18 @@ import { DUPLICATE_WINDOW_MS, GMAIL_PACKAGE, duplicatesToDismiss, isAppOutflow, 
 import type { AccountRuleInput, CaptureItemInput, CaptureStatusValue, CardRuleInput, ConfirmCaptureInput, ConfirmTransferInput } from './captures.schema.js';
 import { readingOf } from './capture-pairing.js';
 import { captureInstallmentPlanId, captureInstallmentRef, installmentAmountsCents, installmentDates } from './capture-installments.js';
+import { isXpKind } from './capture-xp.js';
+import { loadInvestmentHints, type InvestmentHint } from './captures.xp.js';
 import { TRANSFER_WINDOW_MS, isTransferIn, isTransferOut, ownTransferPairs } from './capture-transfer.js';
 
-/** A notice is dismissed (decided 13/11/2026; "restore" brings it back); anything else waits for the user. */
-function statusOfReading(parsed: ParsedCapture | null): 'PENDING' | 'DISMISSED' {
+/**
+ * A notice is dismissed (decided 13/11/2026; "restore" brings it back); anything else waits for the user. XP (P21 L6): a
+ * text no reader understands is STUDY (outside the box, deleted after 60 days) and the reinvestment notice is IGNORED
+ * (kept only to pair with the execution, no draft).
+ */
+function statusOfReading(parsed: ParsedCapture | null): 'PENDING' | 'DISMISSED' | 'IGNORED' | 'STUDY' {
+  if (parsed?.kind === 'XP_STUDY') return 'STUDY';
+  if (parsed?.kind === 'XP_REINVEST_NOTICE') return 'IGNORED';
   return parsed?.ignore ? 'DISMISSED' : 'PENDING';
 }
 
@@ -207,10 +215,11 @@ function toCaptureDto(
   cardRules: readonly SuggestionCardRule[] = [],
   hints?: CategoryHints,
   transferPair: TransferPairDto | null = null,
+  investment?: InvestmentHint,
 ) {
   // Explicit fields: the rows of the transition routes also carry the dedupKey, which is not part of the API.
   const { id, package: pkg, title, text, postedAt, status, parsed, transactionId } = row;
-  return { id, package: pkg, title, text, postedAt, status, parsed, transactionId, suggestion: buildSuggestion(row, rules, cardRules, hints), transferPair };
+  return { id, package: pkg, title, text, postedAt, status, parsed, transactionId, suggestion: { ...buildSuggestion(row, rules, cardRules, hints), ...(investment ? { investment } : {}) }, transferPair };
 }
 
 /**
@@ -294,12 +303,13 @@ export async function listCaptures(householdId: string, query: { status: Capture
     prisma.captureCardRule.findMany({ where: { householdId }, select: { package: true, cardLast4: true, accountId: true } }),
   ]);
   const page = createPaginatedResponse(rows, query.limit);
-  const [hints, pairs] = await Promise.all([
+  const [hints, pairs, investments] = await Promise.all([
     loadCategoryHints(householdId, page.data),
     loadTransferPairs(householdId, page.data, rules, cardRules),
+    loadInvestmentHints(householdId, page.data),
   ]);
   return {
-    data: page.data.map((row) => toCaptureDto(row, rules, cardRules, hints, pairs.get(row.id) ?? null)),
+    data: page.data.map((row) => toCaptureDto(row, rules, cardRules, hints, pairs.get(row.id) ?? null, investments.get(row.id))),
     pagination: page.pagination,
   };
 }
@@ -378,6 +388,11 @@ export async function confirmCapture(
   }
   if (capture.status !== 'PENDING') {
     throw new ConflictError(`A ${capture.status.toLowerCase()} capture cannot be confirmed`);
+  }
+
+  // P21 L6: an XP draft is an investment movement, never a lançamento (it would count the money twice).
+  if (isXpKind((capture.parsed as { kind?: unknown } | null)?.kind)) {
+    throw new BadRequestError('An XP capture is confirmed as an investment movement (POST /captures/:id/confirm-investment), not as a transaction');
   }
 
   // P19: the split ("Metade com", "É de") is checked before anything is written, and written with the transaction
@@ -706,7 +721,7 @@ const REPARSE_LIMIT = 1000;
  * The captures a reparse may change: still waiting for the user (PENDING) or stored IGNORED by the first reader, and
  * read by an older parser (or never). CONFIRMED and DISMISSED are the user's decisions and are never touched.
  */
-const REPARSABLE_STATUSES: Array<'PENDING' | 'IGNORED'> = ['PENDING', 'IGNORED'];
+const REPARSABLE_STATUSES: Array<'PENDING' | 'IGNORED' | 'STUDY'> = ['PENDING', 'IGNORED', 'STUDY'];
 const READ_BY_OLDER_PARSER: Prisma.CapturedNotificationWhereInput[] = [
   { parserVersion: null },
   { parserVersion: { lt: PARSER_VERSION } },

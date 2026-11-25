@@ -842,6 +842,8 @@ enum CaptureStatus {
   CONFIRMED
   DISMISSED
   IGNORED
+  // P21 L6: an XP notification no reader understands. Out of the box of captures; deleted after 60 days.
+  STUDY
 }
 
 // Raw text of a bank push notification sent by the Android app. Stored as received (parsing comes later and only

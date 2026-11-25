@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const refresh = vi.hoisted(() => ({ runInvestmentRefresh: vi.fn() }));
+const study = vi.hoisted(() => ({ purgeStudyCaptures: vi.fn() }));
+vi.mock('../modules/captures/captures.xp.js', () => ({ purgeStudyCaptures: study.purgeStudyCaptures }));
 vi.mock('../shared/config/env.js', () => ({ env: {} }));
 vi.mock('../shared/db/prisma.js', () => ({ prisma: { $disconnect: vi.fn() } }));
 vi.mock('../modules/investments/investments.refresh.js', async (importOriginal) => ({
@@ -16,6 +18,7 @@ let warn: ReturnType<typeof vi.spyOn>;
 let log: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   vi.clearAllMocks();
+  study.purgeStudyCaptures.mockResolvedValue(0);
   warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -47,5 +50,20 @@ describe('refreshInvestments job', () => {
     refresh.runInvestmentRefresh.mockResolvedValue({ quotesSaved: 1, ratesSaved: 2, snapshots: [{ accountId: 'a', totalCents: 123456 }], warnings: [] });
     await runInvestmentsJob({ today: '2026-11-25', env: {} });
     expect([...log.mock.calls].flat().join(' ')).not.toContain('123456');
+  });
+
+  it('also deletes the XP captures in study that are past their 60 days, and prints only the count', async () => {
+    refresh.runInvestmentRefresh.mockResolvedValue({ quotesSaved: 0, ratesSaved: 0, snapshots: [], warnings: [] });
+    study.purgeStudyCaptures.mockResolvedValue(3);
+    await runInvestmentsJob({ today: '2026-11-25', env: {} });
+    expect(study.purgeStudyCaptures).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls.flat().join(' ')).toMatch(/study captures deleted: 3/i);
+  });
+
+  it('a failed deletion does not stop the quotes and snapshots, but fails the run', async () => {
+    refresh.runInvestmentRefresh.mockResolvedValue({ quotesSaved: 1, ratesSaved: 0, snapshots: [], warnings: [] });
+    study.purgeStudyCaptures.mockRejectedValue(new Error('db down'));
+    await expect(runInvestmentsJob({ today: '2026-11-25', env: {} })).rejects.toThrow('db down');
+    expect(refresh.runInvestmentRefresh).toHaveBeenCalledTimes(1);
   });
 });

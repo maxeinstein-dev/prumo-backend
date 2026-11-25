@@ -12,6 +12,8 @@ import {
   captureActionQuerySchema,
   captureIdParamSchema,
   confirmCaptureSchema,
+  confirmInvestmentCaptureSchema,
+  listStudyQuerySchema,
   confirmTransferSchema,
   countCapturesQuerySchema,
   createCapturesSchema,
@@ -20,6 +22,7 @@ import {
   replaceCardRulesSchema,
 } from './captures.schema.js';
 import * as capturesService from './captures.service.js';
+import * as xp from './captures.xp.js';
 
 // A device posts in small bursts, so 120 requests a minute is far above real use and still bounds a leaked token.
 // Keyed by the token hash (not the token) so every device has its own budget behind the same NAT/proxy; without a
@@ -132,6 +135,31 @@ export async function captureRoutes(app: FastifyInstance) {
     return reply.send({ success: true, ...result });
   });
 
+  /** GET /captures/study?package= : the XP notifications no reader understands, outside the box (P21 L6). */
+  app.get('/study', {
+    ...jwt,
+    schema: {
+      ...jwtRoute,
+      description: 'List the notifications "em estudo" (no reader understands them; never a draft or in the PENDING count), newest first, each with the day it will be deleted (60 days after it arrived). Filter with ?package=',
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: { type: 'array', items: looseObject },
+            pagination: { type: 'object', properties: { nextCursor: { type: ['string', 'null'] }, hasMore: { type: 'boolean' } } },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const query = listStudyQuerySchema.parse(request.query);
+    const householdId = await resolveHousehold(request, query.householdId);
+    await requireHouseholdMember(request, householdId);
+    const result = await xp.listStudyCaptures(householdId, query);
+    return reply.send({ success: true, ...result });
+  });
+
   /** GET /captures/count?status= : for a menu badge. */
   app.get('/count', {
     ...jwt,
@@ -228,6 +256,27 @@ export async function captureRoutes(app: FastifyInstance) {
       success: true,
       data: { capture: result.capture, transaction: result.transaction },
     });
+  });
+
+  /** POST /captures/:id/confirm-investment : an XP draft becomes an investment movement (never a transaction). */
+  app.post('/:id/confirm-investment', {
+    ...jwt,
+    schema: {
+      ...jwtRoute,
+      description: 'Confirm a PENDING XP draft (income or executed reinvestment) as an investment movement, creating the position when asked (EDITOR+). Creates no transaction and does not change any balance. Idempotent: an already confirmed capture answers 200 with its movement. A purchase needs `quantity`; an income refuses it.',
+      response: { 200: objectResponse, 201: objectResponse },
+    },
+  }, async (request, reply) => {
+    const { id } = captureIdParamSchema.parse(request.params);
+    const query = captureActionQuerySchema.parse(request.query);
+    const input = confirmInvestmentCaptureSchema.parse(request.body);
+    const authUser = getAuthUser(request);
+    const user = await getUserByFirebaseUid(authUser.uid, authUser.email);
+    const householdId = await resolveHousehold(request, query.householdId);
+    await requireEditor(request, householdId);
+
+    const result = await xp.confirmInvestmentCapture({ householdId, userId: user.id }, id, input);
+    return reply.status(result.created ? 201 : 200).send({ success: true, data: result });
   });
 
   /** POST /captures/reparse : read again, with the current parser, the drafts an older parser read (EDITOR+). */

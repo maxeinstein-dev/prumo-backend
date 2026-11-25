@@ -388,27 +388,85 @@ export async function updatePosition(position: PositionRow, input: UpdatePositio
 
 // ------------------------------------------------------------------------------------------------------- movements
 
+/** Writes a built movement inside an open database transaction: lock, check the whole sequence, insert. */
+async function insertMovement(tx: Db, position: PositionRow, built: MovementData) {
+  await lockPosition(tx, position.id);
+  const existing = await movementsOf(tx, position.id);
+  // The whole resulting sequence must hold (quantity never negative), also for a back-dated entry.
+  computePosition(position.kind, [...existing.map(calcOf), built.calc]);
+  const { calc: _calc, ...data } = built;
+  const created = (await tx.investmentMovement.create({
+    data: { ...data, householdId: position.householdId, positionId: position.id },
+  })) as unknown as MovementRow;
+  return { movement: movementView(created), position: positionView(position, [...existing, created]) };
+}
+
+/**
+ * The movement of a captured notification (P21 L6), written by the caller's own database transaction so the capture is
+ * claimed in the same commit. Like createMovement, it never touches a Transaction or the balance of an account. A
+ * repeated `sourceRef` throws the unique violation (P2002) for the caller to resolve.
+ */
+export async function createMovementInTx(tx: Db, position: PositionRow, input: CreateMovementInput) {
+  assertInvestmentAccount(position.account, true);
+  if (position.closedAt) throw new BadRequestError('The position is closed');
+  return insertMovement(tx, position, buildMovement(position.kind, input));
+}
+
+/** Loads an account of a household for a write, with the same checks of the position routes (investment, active). */
+export async function loadWritableAccount(accountId: string, householdId: string): Promise<AccountRow> {
+  const account = await loadAccount(accountId);
+  if (account.householdId !== householdId) throw new NotFoundError('Account');
+  assertInvestmentAccount(account, true);
+  return account;
+}
+
+/** An empty stock exchange position made from a captured notification (the ticker had none), inside the caller's transaction. */
+export async function createStockPositionInTx(
+  tx: Db,
+  account: AccountRow,
+  input: { ticker: string; name: string; savingsGoalId?: string | null },
+): Promise<PositionRow> {
+  assertInvestmentAccount(account, true);
+  if (input.savingsGoalId) {
+    const goal = await tx.savingsGoal.findFirst({ where: { id: input.savingsGoalId, householdId: account.householdId }, select: { id: true } });
+    if (!goal) throw new NotFoundError('Savings goal');
+  }
+  const twin = await tx.investmentPosition.findFirst({ where: { accountId: account.id, ticker: input.ticker, closedAt: null }, select: { id: true } });
+  if (twin) throw new ConflictError('There is already an open position with this ticker in the account');
+  const created = await tx.investmentPosition.create({
+    data: {
+      householdId: account.householdId,
+      accountId: account.id,
+      kind: 'STOCK_EXCHANGE',
+      ticker: input.ticker,
+      name: input.name,
+      savingsGoalId: input.savingsGoalId ?? null,
+    },
+  });
+  const full = await tx.investmentPosition.findUnique({ where: { id: created.id }, include: { account: true } });
+  return full as unknown as PositionRow;
+}
+
 export async function createMovement(position: PositionRow, input: CreateMovementInput) {
   assertInvestmentAccount(position.account, true);
   if (position.closedAt) throw new BadRequestError('The position is closed');
   const built = buildMovement(position.kind, input);
 
   try {
-    return await prisma.$transaction(async (tx) => {
-      await lockPosition(tx, position.id);
-      const existing = await movementsOf(tx, position.id);
-      // The whole resulting sequence must hold (quantity never negative), also for a back-dated entry.
-      computePosition(position.kind, [...existing.map(calcOf), built.calc]);
-      const { calc: _calc, ...data } = built;
-      const created = (await tx.investmentMovement.create({
-        data: { ...data, householdId: position.householdId, positionId: position.id },
-      })) as unknown as MovementRow;
-      return { movement: movementView(created), position: positionView(position, [...existing, created]) };
-    });
+    return await prisma.$transaction((tx) => insertMovement(tx, position, built));
   } catch (e) {
     if (isUniqueViolation(e)) throw new ConflictError('A movement with this sourceRef already exists');
     throw e;
   }
+}
+
+/** The movement a reference already created, with its position, or null (P21 L6: a confirmed capture answers with it). */
+export async function findMovementBySourceRef(householdId: string, sourceRef: string) {
+  const found = (await prisma.investmentMovement.findFirst({ where: { householdId, sourceRef } })) as unknown as MovementRow | null;
+  if (!found) return null;
+  const position = (await prisma.investmentPosition.findUnique({ where: { id: found.positionId }, include: { account: true } })) as unknown as PositionRow;
+  const all = await movementsOf(prisma, found.positionId);
+  return { movement: movementView(found), position: positionView(position, all) };
 }
 
 export async function deleteMovement(position: PositionRow, movementId: string) {
