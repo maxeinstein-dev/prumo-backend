@@ -29,7 +29,7 @@ describe('aliasesSchema', () => {
 
 describe('recurrenceNameKeys', () => {
   it('holds the normalized description and every alias', () => {
-    expect([...recurrenceNameKeys('Seguro Alfa', ['Pg *Seguro Alfa Conecta'])].sort()).toEqual(['pg seguro alfa conecta', 'seguro alfa']);
+    expect([...recurrenceNameKeys('Seguro Alfa', ['Pg *Seguro Alfa Digital'])].sort()).toEqual(['pg seguro alfa digital', 'seguro alfa']);
     expect(recurrenceNameKeys(null, undefined).size).toBe(0);
   });
 });

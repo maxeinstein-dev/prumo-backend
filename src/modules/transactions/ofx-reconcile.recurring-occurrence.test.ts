@@ -44,7 +44,7 @@ describe('statement OFX after the recurrence job generated the occurrence', () =
 
   it('pairs through an alias of the recurrence when the bank uses another name, amount and day', () => {
     const row = occurrence({});
-    const result = run([line('f1', 'Pg *Seguro Alfa Conecta', -87.4, '2026-10-03')], [row], [recurrence(row, ['Seguro Alfa', 'Pg Seguro Alfa Conecta'])]);
+    const result = run([line('f1', 'Pg *Seguro Alfa Digital', -87.4, '2026-10-03')], [row], [recurrence(row, ['Seguro Alfa', 'Pg Seguro Alfa Digital'])]);
     expect(result.lines[0]?.status).toBe('proposed');
     expect(result.proposals.map((p) => p.kind)).toEqual(['enrich-recurrence']);
     expect(result.proposals[0]).toMatchObject({ target: { id: 'job-occurrence' }, defaultSelected: true, ambiguous: false });
@@ -58,7 +58,7 @@ describe('statement OFX after the recurrence job generated the occurrence', () =
   });
 
   it('keeps the old outcome (a second charge is proposed) when the service found no recurrence occurrence', () => {
-    const result = run([line('f1', 'Pg *Seguro Alfa Conecta', -87.4, '2026-10-03')], [occurrence({})]);
+    const result = run([line('f1', 'Pg *Seguro Alfa Digital', -87.4, '2026-10-03')], [occurrence({})]);
     expect(result.proposals.map((p) => p.kind)).toEqual(['create']);
   });
 });
