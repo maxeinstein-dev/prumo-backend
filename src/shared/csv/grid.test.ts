@@ -31,6 +31,18 @@ describe('decodeCsvBuffer', () => {
     expect(result.encoding).toBe('windows-1252');
   });
 
+  it('maps every defined byte of 0x80-0x9F the same way on any Node version', () => {
+    // curly quotes, dashes, ellipsis and the trade mark sign, as Excel writes them; 0xe9 keeps the buffer from being valid UTF-8
+    const result = decodeCsvBuffer(Buffer.from([0x93, 0x94, 0x91, 0x92, 0x96, 0x97, 0x85, 0x99, 0x8c, 0x9f, 0xe9]));
+
+    expect(result.text).toBe('“”‘’–—…™ŒŸé');
+    expect(result.encoding).toBe('windows-1252');
+  });
+
+  it('keeps the five undefined bytes of windows-1252 as the control character of the same code', () => {
+    expect(decodeCsvBuffer(Buffer.from([0x81, 0x8d, 0x8f, 0x90, 0x9d, 0xe9])).text).toBe('é');
+  });
+
   it('prefers UTF-8 when the bytes are valid in both encodings', () => {
     // "é" in UTF-8 is C3 A9, which cp1252 would read as "Ã©"
     const result = decodeCsvBuffer(Buffer.from([0xc3, 0xa9]));
