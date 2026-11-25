@@ -29,7 +29,7 @@ vi.mock('../categories/categories.service.js', async () => ({
 
 // P22 L2, regression guard: "the card invoice OFX import must never duplicate a purchase that came from a capture in
 // installments". A matrix of how the bank splits the cents x how the capture stored them x the statements imported
-// (month of installment 1, then 2, then 3). The assertions are the INVARIANT, not the detail: after the imports there is
+// (every month of the plan, 1..n). The assertions are the INVARIANT, not the detail: after the imports there is
 // ONE plan (as many rows as installments, no `ofx:` purchase, no `ofx:...:f<i>` future) and the card holds what the bank
 // charged. A gap above the tolerance must still NOT pair. Invented store and amounts only.
 
@@ -59,12 +59,14 @@ function ofx(trns: Trn[], start: string, end: string): Buffer {
   );
 }
 
-const STATEMENTS = [
-  (t: Trn[]) => ofx(t, '20260902', '20261002'),
-  (t: Trn[]) => ofx(t, '20261003', '20261102'),
-  (t: Trn[]) => ofx(t, '20261103', '20261202'),
-];
-const MONTH_DATES = ['20260915', '20261015', '20261115'];
+/** Statement of the m-th month after September 2026 (0-based): closes on the 2nd, the purchase line is on the 15th. */
+function ymd(m: number, day: number): string {
+  const y = 2026 + Math.floor((8 + m) / 12);
+  const mo = ((8 + m) % 12) + 1;
+  return `${y}${String(mo).padStart(2, '0')}${String(day).padStart(2, '0')}`;
+}
+const statement = (m: number, t: Trn[]) => ofx(t, ymd(m, 3), ymd(m + 1, 2));
+const lineDate = (m: number) => ymd(m, 15);
 
 function seedCard(): ResolvedCardAccount {
   const card = seedAccount({ id: CARD, householdId: HH, name: 'Cartao Teste', type: 'CREDIT', dueDay: 9, closingDay: 2 });
@@ -144,12 +146,12 @@ describe('regression guard: the card OFX import never duplicates a purchase capt
   it.each(scenarios)('$name: one plan, no ofx purchase or future, the card holds what the bank charged', async ({ total, n, stored, bank }) => {
     seedPlan(storedCents(total, n, stored));
     const charged = bankCents(total, n, bank);
-    const imported = Math.min(n, 3);
+    const imported = n; // every month of the plan
 
     for (let m = 0; m < imported; m++) {
       const preview = await buildCardOfxPreview({
         account: card,
-        buffer: STATEMENTS[m]!([{ fitid: 'fit-x', date: MONTH_DATES[m]!, amount: fmt(charged[m]!), memo: `Loja Exemplo - Parcela ${m + 1}/${n}` }]),
+        buffer: statement(m, [{ fitid: 'fit-x', date: lineDate(m), amount: fmt(charged[m]!), memo: `Loja Exemplo - Parcela ${m + 1}/${n}` }]),
       });
       // Nothing of this purchase is ever proposed as new.
       expect(preview.proposals.filter((p) => p.kind === 'create'), `statement ${m + 1}`).toEqual([]);
@@ -169,10 +171,11 @@ describe('regression guard: the card OFX import never duplicates a purchase capt
     expect(importedSum).toBe(charged.slice(0, imported).reduce((a, b) => a + b, 0));
     for (let m = 0; m < imported; m++) expect(refsOf(byNumber(m + 1).id)[0]).toMatch(/^ofx:fit-x:/);
 
-    // Importing the first statement again: everything is reconciled, still one plan.
+    // Importing the last statement again: everything is reconciled, still one plan.
+    const last = n - 1;
     const again = await buildCardOfxPreview({
       account: card,
-      buffer: STATEMENTS[0]!([{ fitid: 'fit-x', date: MONTH_DATES[0]!, amount: fmt(charged[0]!), memo: `Loja Exemplo - Parcela 1/${n}` }]),
+      buffer: statement(last, [{ fitid: 'fit-x', date: lineDate(last), amount: fmt(charged[last]!), memo: `Loja Exemplo - Parcela ${n}/${n}` }]),
     });
     expect(again.proposals).toEqual([]);
     expect(cardRows()).toHaveLength(n);
@@ -183,9 +186,20 @@ describe('regression guard: the card OFX import never duplicates a purchase capt
     const farther = centsOf(plan[0]!) + n;
     const preview = await buildCardOfxPreview({
       account: card,
-      buffer: STATEMENTS[0]!([{ fitid: 'fit-x', date: MONTH_DATES[0]!, amount: fmt(farther), memo: `Loja Exemplo - Parcela 1/${n}` }]),
+      buffer: statement(0, [{ fitid: 'fit-x', date: lineDate(0), amount: fmt(farther), memo: `Loja Exemplo - Parcela 1/${n}` }]),
     });
     expect(preview.proposals.filter((p) => p.target?.transactionId === plan[0]!.id)).toEqual([]);
+    expect(preview.proposals.map((p) => p.kind)).toContain('create');
+  });
+
+  it.each(TOTALS.filter(([, , n]) => n > 3))('%s: a future installment charged above the tolerance (n cents apart) does not pair', async (_label, total, n) => {
+    const plan = seedPlan(storedCents(total, n, 'auto'));
+    const last = n - 1;
+    const preview = await buildCardOfxPreview({
+      account: card,
+      buffer: statement(last, [{ fitid: 'fit-x', date: lineDate(last), amount: fmt(centsOf(plan[last]!) + n), memo: `Loja Exemplo - Parcela ${n}/${n}` }]),
+    });
+    expect(preview.proposals.filter((p) => p.target?.transactionId === plan[last]!.id)).toEqual([]);
     expect(preview.proposals.map((p) => p.kind)).toContain('create');
   });
 });

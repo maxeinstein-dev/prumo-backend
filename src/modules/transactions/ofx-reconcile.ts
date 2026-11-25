@@ -482,6 +482,16 @@ function linesNote(states: LineState[]): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * Tolerance of a stored future installment against the statement line of the same N/M. One cent for the futures the OFX
+ * import or the sheet made. A future of a purchase confirmed from a capture (`notif:<dedupKey>:f<i>`, P22) answers like
+ * installment 1 of that plan: up to n - 1 cents (the remainder of the division, which a bank may put on any
+ * installment), at least 1. The bank value then prevails (consume-future moves balance and limit).
+ */
+function futureToleranceCents(future: RowState, total: number): number {
+  return isCaptureFutureRef(future.row.sourceRef) ? Math.max(FUTURE_TOLERANCE_CENTS, total - 1) : FUTURE_TOLERANCE_CENTS;
+}
+
+/**
  * P22: the capture divides a purchase in n installments leaving the odd cents on installment 1 (100,00 in 3x = 33,34 +
  * 33,33 + 33,33), while the bank may charge installment 1 as the plain share (33,33), or the user may have corrected
  * the stored value a little. Only installment 1 of a plan the capture created (installmentId = its own sourceRef) is
@@ -822,7 +832,7 @@ export function reconcileCardOfx(input: ReconcileInput): ReconcileResult {
   const futureCandidates = (state: LineState): RowState[] => {
     const inst = state.line.installment!;
     return (futuresByKey.get(`${inst.number}/${inst.total}`) ?? []).filter(
-      (f) => !f.used && Math.abs(f.cents - state.cents) <= FUTURE_TOLERANCE_CENTS,
+      (f) => !f.used && Math.abs(f.cents - state.cents) <= futureToleranceCents(f, inst.total),
     );
   };
   const installmentGroups = new Map<string, LineState[]>();
