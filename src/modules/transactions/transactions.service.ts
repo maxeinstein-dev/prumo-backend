@@ -77,27 +77,14 @@ function calculateBalanceChange(amount: number, isIncome: boolean, accountType: 
 }
 
 /**
- * Create a new transaction and update account balance
- * @param input Transaction input data
- * @param userId Optional user ID - if provided, allows using personal accounts in shared household
+ * The account a transaction of `householdId` may be written on: an active account of the household itself, or (when the
+ * user is known) the user's own personal account, or a personal account of another member of the household who allowed
+ * access. 404 when none, 403 when the owner did not allow it. Shared by createTransaction and the capture confirmed in
+ * installments, so both accept exactly the same accounts.
  */
-export async function createTransaction(
-  input: CreateTransactionInput,
-  userId?: string,
-  hooks?: { inTransaction?: (tx: Prisma.TransactionClient, created: { id: string }) => Promise<void> }
-) {
-  // householdId must be provided (resolved in routes via ensurePersonalHousehold)
-  if (!input.householdId) {
-    throw new BadRequestError('householdId is required');
-  }
-  const householdId = input.householdId;
-
-  const { accountId, categoryName, amount, description, date, notes } = input;
-
-  // Verify account belongs to household (if accountId is provided)
-  // If userId is provided, also allow accounts from user's personal household
-  let account = null;
-  if (accountId) {
+export async function resolveAccountForTransaction(householdId: string, accountId: string, userId?: string) {
+  let account: Awaited<ReturnType<typeof prisma.account.findFirst>> = null;
+  {
     // First, try to find account in the transaction's household
     account = await prisma.account.findFirst({
       where: { id: accountId, householdId, isActive: true },
@@ -194,6 +181,33 @@ export async function createTransaction(
       throw new NotFoundError('Account');
     }
   }
+  return account;
+}
+
+/**
+ * Create a new transaction and update account balance
+ * @param input Transaction input data
+ * @param userId Optional user ID - if provided, allows using personal accounts in shared household
+ */
+export async function createTransaction(
+  input: CreateTransactionInput,
+  userId?: string,
+  hooks?: {
+    inTransaction?: (tx: Prisma.TransactionClient, created: { id: string }) => Promise<void>;
+    /** Prisma interactive transaction options (default 5 s / 2 s): for callers whose hook writes many rows. */
+    transactionOptions?: { maxWait?: number; timeout?: number };
+  }
+) {
+  // householdId must be provided (resolved in routes via ensurePersonalHousehold)
+  if (!input.householdId) {
+    throw new BadRequestError('householdId is required');
+  }
+  const householdId = input.householdId;
+
+  const { accountId, categoryName, amount, description, date, notes } = input;
+
+  // Verify account belongs to household (if accountId is provided); a member's personal accounts too (see resolveAccountForTransaction)
+  const account = accountId ? await resolveAccountForTransaction(householdId, accountId, userId) : null;
 
   // Resolve transaction type: from input, or infer from category (system or custom)
   let transactionType: TransactionType.INCOME | TransactionType.EXPENSE;
@@ -492,7 +506,7 @@ export async function createTransaction(
     if (hooks?.inTransaction) await hooks.inTransaction(tx, transaction);
 
     return transaction;
-  });
+  }, hooks?.transactionOptions);
 
   // Reload transaction with splits to ensure we have fresh data
   const transactionWithSplits = await prisma.transaction.findUnique({

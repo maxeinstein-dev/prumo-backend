@@ -8,6 +8,8 @@ type Row = Record<string, unknown>;
 const state = vi.hoisted(() => ({
   capture: null as Row | null,
   account: null as Row | null,
+  /** Household that was allowed to use `account` although it is not its own (a personal card a member shared). */
+  grantedTo: null as string | null,
   shares: [] as Row[],
   transactions: [] as Row[],
   people: [] as Row[],
@@ -43,6 +45,7 @@ vi.mock('../../shared/db/prisma.js', () => {
 
 vi.mock('../transactions/transactions.service.js', async () => {
   const { prisma } = await import('../../shared/db/prisma.js');
+  const { NotFoundError } = await import('../../shared/errors/index.js');
   const rollbackOnFailure = async <T>(work: () => Promise<T>): Promise<T> => {
     const saved = { capture: { ...state.capture }, shares: [...state.shares], transactions: [...state.transactions] };
     try {
@@ -55,6 +58,12 @@ vi.mock('../transactions/transactions.service.js', async () => {
     }
   };
   return {
+    // Stand-in of the account resolution createTransaction does (own household, or a personal account of a member who allowed it).
+    resolveAccountForTransaction: vi.fn(async (householdId: string, accountId: string) => {
+      const a = state.account;
+      if (a && a.id === accountId && (a.householdId === householdId || state.grantedTo === householdId)) return { ...a };
+      throw new NotFoundError('Account');
+    }),
     // Stand-in: the hook runs inside the "transaction"; a failing hook rolls everything back.
     createTransaction: vi.fn(async (input: Row, _userId: string, hooks?: { inTransaction?: (tx: unknown, created: Row) => Promise<void> }) =>
       rollbackOnFailure(async () => {
@@ -88,6 +97,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.capture = { id: 'cap-1', householdId: HH, status: 'PENDING', transactionId: null, dedupKey: KEY, parsed: { kind: 'CARD_PURCHASE' } };
   state.account = { id: CARD, householdId: HH, type: 'CREDIT' };
+  state.grantedTo = null;
   state.shares = [];
   state.transactions = [];
   state.people = [{ id: ANA, householdId: HH, name: 'Ana Teste', isActive: true }];
@@ -184,7 +194,6 @@ describe('confirmCapture in installments', () => {
 
   it.each([
     ['a checking account', () => { state.account = { id: CARD, householdId: HH, type: 'CHECKING' }; }, {}],
-    ['an account outside the household', () => { state.account = { id: CARD, householdId: 'other', type: 'CREDIT' }; }, {}],
     ['an income', () => undefined, { type: 'INCOME' }],
     ['a refund capture', () => { state.capture!.parsed = { kind: 'REFUND' }; }, { type: undefined }],
     ['a reference month', () => undefined, { competenceMonth: '2026-10' }],
@@ -195,6 +204,51 @@ describe('confirmCapture in installments', () => {
     expect(createTransaction).not.toHaveBeenCalled();
     expect(createInstallmentRowsInTx).not.toHaveBeenCalled();
     expect(state.capture!.status).toBe('PENDING');
+  });
+
+  it('an account outside the household that nobody shared is refused like the normal path (404), writing nothing', async () => {
+    state.account = { id: CARD, householdId: 'other', type: 'CREDIT' };
+    await expect(confirm({ installments: 3 })).rejects.toMatchObject({ statusCode: 404 });
+    expect(createTransaction).not.toHaveBeenCalled();
+    expect(state.capture!.status).toBe('PENDING');
+  });
+
+  it('a personal credit card of another member who allowed access is accepted, like createTransaction accepts it', async () => {
+    state.account = { id: CARD, householdId: 'hh-personal-other', type: 'CREDIT' };
+    state.grantedTo = HH;
+
+    const result = await confirm({ installments: 3 });
+
+    expect(result.created).toBe(true);
+    expect(state.capture!.status).toBe('CONFIRMED');
+    expect(vi.mocked(createInstallmentRowsInTx).mock.calls[0]![1]).toMatchObject({ householdId: HH, account: { id: CARD, type: 'CREDIT' } });
+  });
+
+  it('a shared account that is not a credit card is still refused (400)', async () => {
+    state.account = { id: CARD, householdId: 'hh-personal-other', type: 'CHECKING' };
+    state.grantedTo = HH;
+    await expect(confirm({ installments: 3 })).rejects.toMatchObject({ statusCode: 400 });
+    expect(createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('a refusal of the account resolution (403) goes up as is and nothing is written', async () => {
+    vi.mocked(transactionsService.resolveAccountForTransaction).mockRejectedValueOnce(Object.assign(new Error('no'), { statusCode: 403 }));
+    await expect(confirm({ installments: 3 })).rejects.toMatchObject({ statusCode: 403 });
+    expect(createTransaction).not.toHaveBeenCalled();
+    expect(state.capture!.status).toBe('PENDING');
+  });
+
+  it('the database transaction of an installment confirmation gets an explicit, generous timeout (24 installments split with someone are ~100 round trips)', async () => {
+    await confirm({ installments: 24, shares: { strategy: 'equal', entries: [{ personId: ANA }] } });
+    const hooks = vi.mocked(createTransaction).mock.calls[0]![2] as unknown as { transactionOptions?: { timeout?: number; maxWait?: number } };
+    expect(hooks.transactionOptions?.timeout).toBeGreaterThanOrEqual(30_000);
+    expect(hooks.transactionOptions?.maxWait).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it('without installments the database transaction keeps its defaults (no options passed)', async () => {
+    await confirm();
+    const hooks = vi.mocked(createTransaction).mock.calls[0]![2] as unknown as { transactionOptions?: unknown };
+    expect(hooks.transactionOptions).toBeUndefined();
   });
 
   it('without installments nothing changes: one transaction, no plan fields, no extra rows', async () => {

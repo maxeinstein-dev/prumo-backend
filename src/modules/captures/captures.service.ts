@@ -3,7 +3,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../../shared/errors/index.js';
 import { buildPaginationArgs, createPaginatedResponse } from '../../shared/utils/pagination.js';
-import { createInstallmentRowsInTx, createTransaction, createTransfer, getTransactionWithHousehold } from '../transactions/transactions.service.js';
+import { createInstallmentRowsInTx, createTransaction, createTransfer, getTransactionWithHousehold, resolveAccountForTransaction } from '../transactions/transactions.service.js';
 import type { CreateTransactionInput } from '../transactions/transactions.schema.js';
 import { checkNewTransactionSplit, writeNewTransactionSharesInTx } from '../people/shares.service.js';
 import { buildCategoryHints, type CategoryHints } from './capture-category.js';
@@ -437,10 +437,13 @@ async function confirmInInstallments(
   if (fields.competenceMonth) {
     throw new BadRequestError('A purchase in installments has no single reference month: its installments are dated one per month');
   }
-  const account = await prisma.account.findFirst({ where: { id: fields.accountId, householdId, isActive: true }, select: { id: true, type: true } });
-  if (!account || account.type !== 'CREDIT') {
-    throw new BadRequestError('Installments are only for a credit card account of this household');
+  // The same resolution createTransaction does: an account of the household, or a personal account of a member who
+  // allowed access (404/403 as in the normal path); then it must still be a credit card.
+  const resolved = await resolveAccountForTransaction(householdId, fields.accountId, userId);
+  if (!resolved || resolved.type !== 'CREDIT') {
+    throw new BadRequestError('Installments are only for a credit card account');
   }
+  const account = { id: resolved.id, type: resolved.type };
 
   const amounts = installmentAmountsCents(
     Math.round(fields.amount * 100),
@@ -476,6 +479,8 @@ async function confirmInInstallments(
       } as CreateTransactionInput,
       userId,
       {
+        // 24 installments (and a split) are ~100 round trips: far over Prisma's default 5 s on a remote database.
+        transactionOptions: { maxWait: 10_000, timeout: 60_000 },
         inTransaction: async (tx, created) => {
           const claimed = await tx.capturedNotification.updateMany({
             where: { id: capture.id, householdId, status: 'PENDING' },
