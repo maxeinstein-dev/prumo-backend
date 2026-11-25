@@ -28,6 +28,14 @@ import { AccountType } from '../shared/enums/index.js';
 import { anchorDayOf } from '../modules/recurring-transactions/recurring-dates.js';
 import { calculateNextRunDate, executeRecurringTransaction, occurrenceDateFor } from '../modules/recurring-transactions/recurring-transactions.service.js';
 
+/** Raised after the loop when some recurrences failed; carries only their ids (never names or amounts). */
+export class RecurrenceRunError extends Error {
+  constructor(public readonly failedIds: string[]) {
+    super(`${failedIds.length} recurrence(s) failed to process: ${failedIds.join(', ')}`);
+    this.name = 'RecurrenceRunError';
+  }
+}
+
 /**
  * Process all due recurring transactions
  */
@@ -168,8 +176,11 @@ export async function processDueRecurringTransactions() {
     );
     if (errors.length > 0) {
       console.error('[CronJob] Errors:', errors);
+      // The others were all processed above; fail the run so the workflow opens an issue.
+      throw new RecurrenceRunError(errors.map((e) => e.recurringId));
     }
   } catch (error) {
+    if (error instanceof RecurrenceRunError) throw error;
     console.error('[CronJob] Fatal error processing recurring transactions:', error);
     throw error; // Re-throw to exit with error code
   }
