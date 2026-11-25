@@ -53,6 +53,7 @@ import { fitidToken, type CardOfxStatementLine } from './parsers/ofx-card.parser
 import { normalizeLabel } from './maxfin-import.helpers.js';
 import { recurrenceNameKeys } from '../recurring-transactions/recurring-aliases.js';
 import { normalizeDescription } from '../recurring-transactions/detect.js';
+import { isCaptureFutureRef } from '../captures/capture-installments.js';
 
 export type ReconcileLine = CardOfxStatementLine;
 
@@ -992,7 +993,9 @@ export function reconcileCardOfx(input: ReconcileInput): ReconcileResult {
   // the notification (NOTIF_DAYS_*), closest date first, then words in common. Equal amounts make the pairing a guess,
   // which is harmless (both sides have the same amount, so the card total is right either way) and flagged tieBroken.
   const notifs = rowStates(
-    (input.notifRows ?? []).filter((r) => !linked.has(r.id) && (r.sourceRef ?? '').startsWith(NOTIF_REF_PREFIX)),
+    (input.notifRows ?? []).filter(
+      (r) => !linked.has(r.id) && (r.sourceRef ?? '').startsWith(NOTIF_REF_PREFIX) && !isCaptureFutureRef(r.sourceRef),
+    ),
   );
   if (notifs.length > 0) {
     const pairsNotif: Array<{ row: RowState; state: LineState; days: number; shared: number }> = [];

@@ -49,6 +49,7 @@ import {
 } from './maxfin-import.service.js';
 import type { MaxFinCategoryMapEntry, MaxFinCategoryMapInput } from './maxfin-import.types.js';
 import { computeClosing } from './card-ofx-closing.js';
+import { isCaptureFutureRef } from '../captures/capture-installments.js';
 import { withoutPaymentMarkerWhere } from './invoice-payment-link.js';
 import { followLastAmountInTx } from '../recurring-transactions/recurring-follow.js';
 import {
@@ -428,14 +429,19 @@ async function loadCardContext(
       where: {
         householdId,
         accountId: card.id,
-        date: { gte: firstDayOfMonth(month) },
         installmentNumber: { not: null },
         sourceRef: { contains: ':f' },
+        // A future of a captured purchase is dated on the purchase day of its month, which can fall before the first
+        // day of the invoice month it is charged on (P22): it is looked up from two months earlier.
+        OR: [
+          { date: { gte: firstDayOfMonth(month) } },
+          { sourceRef: { startsWith: NOTIF_REF_PREFIX }, date: { gte: firstDayOfMonth(addMonths(month, -2)) } },
+        ],
       },
       select: CARD_ROW_SELECT,
     }),
   )
-    .filter((row) => isFutureDraftRef(row.sourceRef) || isOfxFutureRef(row.sourceRef))
+    .filter((row) => isFutureDraftRef(row.sourceRef) || isOfxFutureRef(row.sourceRef) || isCaptureFutureRef(row.sourceRef))
     .sort((a, b) => compareText(a.date, b.date) || compareText(a.sourceRef ?? '', b.sourceRef ?? ''));
 
   const days = lines.map((l) => l.date).sort();
@@ -464,6 +470,8 @@ async function loadCardContext(
       orderBy: [{ date: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     }),
   );
+  // The future installments of a captured purchase (`notif:<dedupKey>:f<i>`) are in `futures`, never plain notifications.
+  const plainNotifRows = notifRows.filter((row) => !isCaptureFutureRef(row.sourceRef));
 
   const recurrenceRows = await loadRecurrenceOccurrences(householdId, card.id, legacyStart, legacyEnd);
 
@@ -591,7 +599,7 @@ async function loadCardContext(
       sheetRows,
       futures,
       legacy,
-      notifRows,
+      notifRows: plainNotifRows,
       recurrenceRows,
       knownRefs,
       linkedTransactionIds,
