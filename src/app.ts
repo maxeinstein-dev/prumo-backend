@@ -8,7 +8,7 @@ import swaggerUi from '@fastify/swagger-ui';
 
 import { env, isProduction, isLocalAuth } from './shared/config/env.js';
 import { initializeFirebase } from './shared/config/firebase.js';
-import { connectDatabase, disconnectDatabase } from './shared/db/prisma.js';
+import { connectDatabase, disconnectDatabase, prisma } from './shared/db/prisma.js';
 import { runMigrations } from './shared/db/migrations.js';
 import { errorHandler } from './shared/errors/error-handler.js';
 
@@ -32,6 +32,7 @@ import { dashboardRoutes } from './modules/dashboard/index.js';
 import { deviceRoutes } from './modules/devices/index.js';
 import { captureRoutes } from './modules/captures/index.js';
 import { buildCommit } from './shared/utils/buildInfo.js';
+import { registerDbHealthRoute } from './shared/health/db-health.js';
 import { checkCorsOrigin } from './shared/utils/cors-origin.js';
 import { payrollRoutes } from './modules/payroll/index.js';
 import { organizeRoutes, peopleRoutes, settlementRoutes, transactionSharesRoutes } from './modules/people/index.js';
@@ -235,6 +236,10 @@ export async function buildApp(): Promise<FastifyInstance> {
       return request.authUser?.uid || request.ip;
     },
   });
+
+  // Database health check. Registered after the rate limit on purpose: /health is registered before it and is not
+  // limited, while this one wakes the database, so it must be.
+  await registerDbHealthRoute(app, prisma);
 
   // Multipart (file uploads — used by POST /transactions/import/preview)
   await app.register(multipart, {
