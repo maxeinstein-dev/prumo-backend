@@ -26,6 +26,20 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('refreshInvestments job', () => {
+  it('stale market data fails the run after everything else was done, so the workflow opens its issue', async () => {
+    refresh.runInvestmentRefresh.mockResolvedValue({
+      quotesSaved: 0, ratesSaved: 0, snapshots: [{ accountId: 'a', totalCents: 5 }], warnings: ['No usable price'],
+      stale: { staleTickers: 3, staleIndexes: [] },
+    });
+    await expect(runInvestmentsJob({ today: '2026-11-25', env: {} })).rejects.toThrow(/3 ticker/);
+    expect(log.mock.calls.flat().join(' ')).toMatch(/snapshots recorded: 1/i);
+  });
+
+  it('fresh market data keeps the run green', async () => {
+    refresh.runInvestmentRefresh.mockResolvedValue({ quotesSaved: 3, ratesSaved: 1, snapshots: [], warnings: [], stale: { staleTickers: 0, staleIndexes: [] } });
+    await expect(runInvestmentsJob({ today: '2026-11-25', env: {} })).resolves.toBeDefined();
+  });
+
   it('fetch warnings are printed as warnings and the run still ends well', async () => {
     refresh.runInvestmentRefresh.mockResolvedValue({ quotesSaved: 0, ratesSaved: 0, snapshots: [], warnings: ['brapi unavailable (timeout): quotes not updated'] });
     await expect(runInvestmentsJob({ today: '2026-11-25', env: { BRAPI_TOKEN: TOKEN } })).resolves.toBeDefined();

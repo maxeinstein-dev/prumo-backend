@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const db = vi.hoisted(() => {
   const d: Record<string, any> = {
     investmentPosition: { findMany: vi.fn() },
-    assetQuote: { upsert: vi.fn() },
+    assetQuote: { upsert: vi.fn(), groupBy: vi.fn() },
     indexRate: { aggregate: vi.fn(), createMany: vi.fn() },
   };
   return d;
@@ -33,6 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   db.investmentPosition.findMany.mockResolvedValue([stock('TEST11'), stock('ABCD3'), stock('TEST11'), fixed('CDI')]);
   db.assetQuote.upsert.mockResolvedValue({});
+  db.assetQuote.groupBy.mockResolvedValue([{ ticker: 'TEST11', _max: { date: day('2026-11-25') } }, { ticker: 'ABCD3', _max: { date: day('2026-11-25') } }]);
   db.indexRate.aggregate.mockResolvedValue({ _min: { date: null }, _max: { date: null } });
   db.indexRate.createMany.mockResolvedValue({ count: 0 });
   snapshots.recordAccountSnapshots.mockResolvedValue({ recorded: [{ accountId: 'a', totalCents: 1 }], failedAccountIds: [] });
@@ -148,5 +149,26 @@ describe('runInvestmentRefresh', () => {
   it('a database failure while saving is not swallowed', async () => {
     db.assetQuote.upsert.mockRejectedValue(new Error('db down'));
     await expect(run()).rejects.toThrow('db down');
+  });
+
+  it('reports what is still stale in the stored data: the tickers whose fetch failed and that have no recent close', async () => {
+    brapi.fetchQuotes.mockResolvedValue({ quotes: [], warnings: ['brapi refused the request'] });
+    db.assetQuote.groupBy.mockResolvedValue([{ ticker: 'TEST11', _max: { date: day('2026-11-24') } }]);
+    const r = await run();
+    expect(r.stale.staleTickers).toBe(1); // ABCD3 was never quoted; TEST11 has yesterday's close
+    expect(snapshots.recordAccountSnapshots).toHaveBeenCalled(); // the snapshots were still recorded
+  });
+
+  it('nothing is stale when the closes are fresh and the CDI just came into use', async () => {
+    db.investmentPosition.findMany.mockResolvedValue([stock('TEST11'), stock('ABCD3'), fixed('CDI', '2026-11-24')]);
+    const r = await run();
+    expect(r.stale).toEqual({ staleTickers: 0, staleIndexes: [] });
+  });
+
+  it('a CDI in use for weeks with no stored rate is stale', async () => {
+    db.investmentPosition.findMany.mockResolvedValue([fixed('CDI', '2026-10-01')]);
+    bcb.fetchSeries.mockResolvedValue({ rates: [], warnings: ['Banco Central unavailable'] });
+    const r = await run();
+    expect(r.stale.staleIndexes).toEqual(['CDI']);
   });
 });
