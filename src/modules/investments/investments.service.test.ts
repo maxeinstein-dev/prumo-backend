@@ -8,6 +8,8 @@ const db = vi.hoisted(() => {
     savingsGoal: { findFirst: vi.fn() },
     investmentPosition: { findMany: vi.fn(), findUnique: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
     investmentMovement: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), delete: vi.fn() },
+    assetQuote: { findMany: vi.fn() },
+    indexRate: { findMany: vi.fn() },
     $queryRaw: vi.fn(),
   };
   d.$transaction = vi.fn(async (cb: (tx: unknown) => unknown) => cb(d));
@@ -86,6 +88,8 @@ beforeEach(() => {
   db.investmentMovement.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'new', createdAt: new Date(), ...data }));
   db.investmentPosition.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => position({ ...data, id: POS }));
   db.$queryRaw.mockResolvedValue([]);
+  db.assetQuote.findMany.mockResolvedValue([]);
+  db.indexRate.findMany.mockResolvedValue([]);
 });
 
 describe('account checks', () => {

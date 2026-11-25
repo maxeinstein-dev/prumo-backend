@@ -1260,3 +1260,41 @@ model InvestmentMovement {
   @@index([householdId])
   @@map("investment_movements")
 }
+
+// Market data of P21 L2. Global tables (not per household): the same close or index rate serves every household.
+// Index units (the same ones the Banco Central publishes in the SGS series):
+//   CDI   = series 12, in percent PER DAY (0.055131 = 0.055131% a.d.), one row per business day
+//   SELIC = series 11, in percent PER DAY, one row per business day
+//   IPCA  = series 433, in percent PER MONTH (0.44 = 0.44% in the month), dated on the 1st day of the reference month
+enum MarketIndex {
+  CDI
+  SELIC
+  IPCA
+}
+
+// Closing price of a listed asset on a day, in reais. One row per ticker and day.
+model AssetQuote {
+  id        String   @id @default(uuid()) @db.Uuid
+  ticker    String   @db.VarChar(20)
+  date      DateTime @db.Date
+  close     Decimal  @map("close_price") @db.Decimal(15, 6)
+  source    String   @default("brapi") @db.VarChar(20)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([ticker, date])
+  @@index([ticker, date(sort: Desc)])
+  @@map("asset_quotes")
+}
+
+// Value of a market index on a day (units in the comment above MarketIndex). One row per index and day.
+model IndexRate {
+  id        String      @id @default(uuid()) @db.Uuid
+  index     MarketIndex @map("index_name")
+  date      DateTime    @db.Date
+  value     Decimal     @db.Decimal(14, 8)
+  source    String      @default("bcb") @db.VarChar(20)
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  @@unique([index, date])
+  @@map("index_rates")
+}

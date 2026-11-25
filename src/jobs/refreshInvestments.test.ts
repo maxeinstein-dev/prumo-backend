@@ -1,0 +1,51 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const refresh = vi.hoisted(() => ({ runInvestmentRefresh: vi.fn() }));
+vi.mock('../shared/config/env.js', () => ({ env: {} }));
+vi.mock('../shared/db/prisma.js', () => ({ prisma: { $disconnect: vi.fn() } }));
+vi.mock('../modules/investments/investments.refresh.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../modules/investments/investments.refresh.js')>()),
+  runInvestmentRefresh: refresh.runInvestmentRefresh,
+}));
+
+import { InvestmentRefreshError } from '../modules/investments/investments.refresh.js';
+import { runInvestmentsJob } from './refreshInvestments.js';
+
+const TOKEN = 'tok-invented-987654';
+let warn: ReturnType<typeof vi.spyOn>;
+let log: ReturnType<typeof vi.spyOn>;
+beforeEach(() => {
+  vi.clearAllMocks();
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+});
+afterEach(() => vi.restoreAllMocks());
+
+describe('refreshInvestments job', () => {
+  it('fetch warnings are printed as warnings and the run still ends well', async () => {
+    refresh.runInvestmentRefresh.mockResolvedValue({ quotesSaved: 0, ratesSaved: 0, snapshots: [], warnings: ['brapi unavailable (timeout): quotes not updated'] });
+    await expect(runInvestmentsJob({ today: '2026-11-25', env: { BRAPI_TOKEN: TOKEN } })).resolves.toBeDefined();
+    expect(warn.mock.calls.flat().join(' ')).toContain('brapi unavailable (timeout)');
+  });
+
+  it('a snapshot failure fails the run (the process will exit with an error)', async () => {
+    refresh.runInvestmentRefresh.mockRejectedValue(new InvestmentRefreshError(['acc-1']));
+    await expect(runInvestmentsJob({ today: '2026-11-25', env: {} })).rejects.toBeInstanceOf(InvestmentRefreshError);
+  });
+
+  it('builds the brapi client with the token of the environment and never prints it', async () => {
+    refresh.runInvestmentRefresh.mockResolvedValue({ quotesSaved: 1, ratesSaved: 2, snapshots: [{ accountId: 'a', totalCents: 5 }], warnings: [] });
+    await runInvestmentsJob({ today: '2026-11-25', env: { BRAPI_TOKEN: TOKEN } });
+    expect(refresh.runInvestmentRefresh).toHaveBeenCalledWith(expect.objectContaining({ today: '2026-11-25', brapi: expect.anything(), bcb: expect.anything() }));
+    const printed = [...log.mock.calls, ...warn.mock.calls].flat().join(' ');
+    expect(printed).not.toContain(TOKEN);
+    expect(printed).toMatch(/quotes saved: 1/i);
+  });
+
+  it('prints no amounts or names: only counts', async () => {
+    refresh.runInvestmentRefresh.mockResolvedValue({ quotesSaved: 1, ratesSaved: 2, snapshots: [{ accountId: 'a', totalCents: 123456 }], warnings: [] });
+    await runInvestmentsJob({ today: '2026-11-25', env: {} });
+    expect([...log.mock.calls].flat().join(' ')).not.toContain('123456');
+  });
+});

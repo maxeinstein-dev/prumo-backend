@@ -12,6 +12,7 @@ import {
   type MovementType,
   type PositionKind,
 } from './investments.calc.js';
+import { loadMarketData, valuePosition, type MarketData } from './investments.valuation.js';
 import type { CreateMovementInput, CreatePositionInput, UpdatePositionInput } from './investments.schema.js';
 
 /**
@@ -144,16 +145,37 @@ function movementView(m: MovementRow) {
   };
 }
 
+/** The L1 figures of a position plus its current value (P21 L2): value, result, the day it refers to and how sure it is. */
+function valuedView(p: PositionRow, movements: MovementRow[], market: MarketData, asOf: string) {
+  const v = valuePosition(p, movements.map(calcOf), market, asOf);
+  return {
+    view: {
+      ...positionView(p, movements, asOf),
+      currentValue: reais(v.valueCents),
+      result: reais(v.valueCents - v.costCents),
+      valueDate: v.valueDate,
+      valueMark: v.valueMark,
+      estimated: v.estimated,
+      noQuote: v.noQuote,
+      ratesCarried: v.ratesCarried,
+      ratesMissing: v.ratesMissing,
+      lastQuote: v.lastQuote,
+    },
+    valuation: v,
+  };
+}
+
 async function movementsOf(db: Db | typeof prisma, positionId: string): Promise<MovementRow[]> {
   return (await db.investmentMovement.findMany({ where: { positionId }, orderBy: [{ date: 'asc' }, { createdAt: 'asc' }] })) as unknown as MovementRow[];
 }
 
-async function detail(db: Db | typeof prisma, positionId: string) {
+async function detail(db: Db | typeof prisma, positionId: string, withValue = false) {
   const p = (await db.investmentPosition.findUnique({ where: { id: positionId }, include: { account: true } })) as unknown as PositionRow;
   const movements = await movementsOf(db, positionId);
   const ordered = sortMovements(movements.map((m) => ({ ...m, date: dayOf(m.date) }))).reverse();
+  const asOf = todayDay();
   return {
-    ...positionView(p, movements),
+    ...(withValue ? valuedView(p, movements, await loadMarketData([p], asOf), asOf).view : positionView(p, movements)),
     movements: ordered.map((o) => movementView(movements.find((m) => m.id === o.id)!)),
   };
 }
@@ -161,7 +183,7 @@ async function detail(db: Db | typeof prisma, positionId: string) {
 // ----------------------------------------------------------------------------------------------------------- list
 
 /** Positions of an account with their figures, and the account summary: cash at the broker and total at cost. */
-export async function listPositions(account: AccountRow, opts: { includeClosed?: boolean }) {
+export async function listPositions(account: AccountRow, opts: { includeClosed?: boolean; asOf?: string }) {
   assertInvestmentAccount(account, false);
   const positions = (await prisma.investmentPosition.findMany({
     where: { accountId: account.id, ...(opts.includeClosed ? {} : { closedAt: null }) },
@@ -181,7 +203,13 @@ export async function listPositions(account: AccountRow, opts: { includeClosed?:
     byPosition.set(m.positionId, [...(byPosition.get(m.positionId) ?? []), m]);
   }
 
-  const views = positions.map((p) => positionView(p, byPosition.get(p.id) ?? []));
+  const asOf = opts.asOf ?? todayDay();
+  const market = await loadMarketData(positions, asOf);
+  const valued = positions.map((p) => valuedView(p, byPosition.get(p.id) ?? [], market, asOf));
+  const views = valued.map((v) => v.view);
+  const openValued = valued.filter((v) => v.view.closedAt === null);
+  const positionsValueCents = openValued.reduce((s, v) => s + v.valuation.valueCents, 0);
+  const positionsResultCents = openValued.reduce((s, v) => s + v.valuation.valueCents - v.valuation.costCents, 0);
   const positionsCostCents = views.filter((v) => v.closedAt === null).reduce((s, v) => s + Math.round(v.costAmount * 100), 0);
   const accountBalanceCents = cents(account.balance);
   const cashCents = accountBalanceCents + cashEffect;
@@ -193,13 +221,20 @@ export async function listPositions(account: AccountRow, opts: { includeClosed?:
       cashBalance: reais(cashCents),
       positionsCost: reais(positionsCostCents),
       totalAtCost: reais(positionsCostCents + cashCents),
+      // P21 L2: market value. Only added fields; the L1 ones above keep their meaning (at cost).
+      valuedAt: asOf,
+      positionsValue: reais(positionsValueCents),
+      positionsResult: reais(positionsResultCents),
+      totalValue: reais(positionsValueCents + cashCents),
+      hasEstimates: openValued.some((v) => v.valuation.estimated),
+      hasNoQuote: openValued.some((v) => v.valuation.noQuote),
     },
     positions: views,
   };
 }
 
 export async function getPositionDetail(position: PositionRow) {
-  return detail(prisma, position.id);
+  return detail(prisma, position.id, true);
 }
 
 // ------------------------------------------------------------------------------------------------ movement building

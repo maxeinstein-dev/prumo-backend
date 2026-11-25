@@ -61,7 +61,7 @@ export function sortMovements<T extends Pick<CalcMovement, 'date' | 'createdAt' 
 }
 
 /** round-half-up of a/b for non-negative bigints */
-const divRound = (a: bigint, b: bigint): bigint => (a * 2n + b) / (b * 2n);
+export const divRound = (a: bigint, b: bigint): bigint => (a * 2n + b) / (b * 2n);
 
 export function computePosition(kind: PositionKind, movements: CalcMovement[]): PositionFigures {
   let qtyMicro = 0;
