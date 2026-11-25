@@ -15,6 +15,7 @@ import {
 } from '../../shared/enums/index.js';
 import { toCustomCategoryName } from '../../shared/utils/categoryHelpers.js';
 import { MAXFIN_SECTION_KEYS } from './parsers/maxfin.types.js';
+import { invoicePaymentOfInvoiceWhere, invoicePaymentTag } from './invoice-payment-link.js';
 import type { MaxFinInstallment, MaxFinMonth, MaxFinRow, MaxFinSectionKey } from './parsers/maxfin.types.js';
 
 // Category mapping
@@ -408,12 +409,19 @@ export function parseLocalDateString(value: string): Date {
   return date;
 }
 
+const calendarMonth = (month: MaxFinMonth) => `${String(month.year).padStart(4, '0')}-${String(month.month).padStart(2, '0')}`;
+
 /**
- * Technical identifier `payCreditCardInvoice` stores on the payment of a card's invoice for a month
- * (`invoice_pay:<card>:<year>-<zero-based month>`). The frontend builds the same string to filter invoices.
+ * Legacy text `payCreditCardInvoice` stores in `attachmentUrl` on the payment of a card's invoice for a month (the
+ * zero-based month inside). The frontend builds the same string to filter invoices.
  */
 export function invoiceTechnicalId(accountId: string, month: MaxFinMonth): string {
-  return `invoice_pay:${accountId}:${month.year}-${month.month - 1}`;
+  return invoicePaymentTag(accountId, calendarMonth(month));
+}
+
+/** Filter for the payment(s) already recorded for a card's invoice of a month (columns or legacy text). */
+export function invoicePaymentWhere(accountId: string, month: MaxFinMonth) {
+  return invoicePaymentOfInvoiceWhere(accountId, calendarMonth(month));
 }
 
 /** Key of the "same account, day, amount, description and type" legacy duplicate rule (amounts are absolute). */

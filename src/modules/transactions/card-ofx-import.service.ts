@@ -30,7 +30,7 @@ import {
 import {
   addMonths,
   firstDayOfMonth,
-  invoiceTechnicalId,
+  invoicePaymentWhere,
   isFutureDraftRef,
   monthKey,
   normalizeLabel,
@@ -49,6 +49,7 @@ import {
 } from './maxfin-import.service.js';
 import type { MaxFinCategoryMapEntry, MaxFinCategoryMapInput } from './maxfin-import.types.js';
 import { computeClosing } from './card-ofx-closing.js';
+import { withoutPaymentMarkerWhere } from './invoice-payment-link.js';
 import { followLastAmountInTx } from '../recurring-transactions/recurring-follow.js';
 import {
   NOTIF_DAYS_LINE_AFTER,
@@ -235,6 +236,7 @@ export const CARD_ROW_SELECT = {
   isSplit: true,
   recurringTransactionId: true,
   attachmentUrl: true,
+  invoicePaymentAccountId: true,
 } as const;
 
 interface CardRowRecord {
@@ -253,6 +255,7 @@ interface CardRowRecord {
   isSplit?: boolean | null;
   recurringTransactionId?: string | null;
   attachmentUrl?: string | null;
+  invoicePaymentAccountId?: string | null;
 }
 
 function toStoredRow(t: CardRowRecord): StoredCardRow | null {
@@ -271,7 +274,7 @@ function toStoredRow(t: CardRowRecord): StoredCardRow | null {
     totalInstallments: t.totalInstallments,
     categoryName: t.categoryName ?? null,
     // Shares and settlements are added by markMergeBlocked.
-    mergeBlocked: !!t.isSplit || !!t.recurringTransactionId || !!t.attachmentUrl,
+    mergeBlocked: !!t.isSplit || !!t.recurringTransactionId || !!t.attachmentUrl || !!t.invoicePaymentAccountId,
   };
 }
 
@@ -488,7 +491,7 @@ async function loadCardContext(
     new Map(
       (
         await prisma.transaction.findMany({
-          where: { householdId, accountId: card.id, attachmentUrl: null, id: { in: ids }, ...(range ? { date: range } : {}) },
+          where: { householdId, accountId: card.id, ...withoutPaymentMarkerWhere(), id: { in: ids }, ...(range ? { date: range } : {}) },
           select: CARD_ROW_SELECT,
         })
       ).map((t) => [t.id, t] as const),
@@ -531,7 +534,7 @@ async function loadCardContext(
     const last = utcDay(period.end);
     last.setUTCDate(last.getUTCDate() - 2);
     const inside = await prisma.transaction.findMany({
-      where: { householdId, accountId: card.id, attachmentUrl: null, date: { gte: first, lte: last } },
+      where: { householdId, accountId: card.id, ...withoutPaymentMarkerWhere(), date: { gte: first, lte: last } },
       select: CARD_ROW_SELECT,
     });
     const tied = await prisma.transactionExternalRef.findMany({
@@ -556,7 +559,7 @@ async function loadCardContext(
 
   const recordedPayments: RecordedPayment[] = (
     await prisma.transaction.findMany({
-      where: { householdId, attachmentUrl: invoiceTechnicalId(card.id, previous) },
+      where: { householdId, ...invoicePaymentWhere(card.id, previous) },
       select: { id: true, amount: true, date: true, accountId: true, description: true },
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
     })
@@ -934,7 +937,7 @@ export async function buildCardOfxPreview(params: BuildCardOfxPreviewParams): Pr
   const adoptions = result.proposals.filter((p) => p.kind === 'enrich-near' && p.defaultSelected);
   if (adoptions.length > 0) {
     const paid = await prisma.transaction.findMany({
-      where: { householdId: account.householdId, attachmentUrl: invoiceTechnicalId(account.id, month) },
+      where: { householdId: account.householdId, ...invoicePaymentWhere(account.id, month) },
       select: { amount: true },
     });
     if (paid.length > 0) {

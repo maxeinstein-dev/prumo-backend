@@ -578,7 +578,7 @@ export async function transactionRoutes(app: FastifyInstance) {
           required: ['accountId', 'month'],
           properties: {
             accountId: { type: 'string', format: 'uuid' },
-            month: { type: 'string', pattern: '^\\d{4}-\\d{2}$' },
+            month: { type: 'string', pattern: '^\\d{4}-(0[1-9]|1[0-2])$' },
           },
         },
         querystring: {
@@ -707,7 +707,7 @@ export async function transactionRoutes(app: FastifyInstance) {
           properties: {
             sourceAccountId: { type: 'string', format: 'uuid' },
             amount: { type: 'number' },
-            month: { type: 'string', pattern: '^\\d{4}-\\d{2}$' },
+            month: { type: 'string', pattern: '^\\d{4}-(0[1-9]|1[0-2])$' },
             description: { type: 'string' },
             householdId: { type: 'string', format: 'uuid' },
             paymentDate: { type: 'string', format: 'date' },

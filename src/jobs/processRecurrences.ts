@@ -27,13 +27,21 @@ import { prisma } from '../shared/db/prisma.js';
 import { AccountType } from '../shared/enums/index.js';
 import { anchorDayOf } from '../modules/recurring-transactions/recurring-dates.js';
 import { calculateNextRunDate, executeRecurringTransaction, occurrenceDateFor } from '../modules/recurring-transactions/recurring-transactions.service.js';
+import { utcToday } from '../modules/transactions/transactions.service.js';
+
+/** Raised after the loop when some recurrences failed; carries only their ids (never names or amounts). */
+export class RecurrenceRunError extends Error {
+  constructor(public readonly failedIds: string[]) {
+    super(`${failedIds.length} recurrence(s) failed to process: ${failedIds.join(', ')}`);
+    this.name = 'RecurrenceRunError';
+  }
+}
 
 /**
  * Process all due recurring transactions
  */
 export async function processDueRecurringTransactions() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0); // Normalize to start of day
+  const today = utcToday(); // UTC day, the same "today" the rest of the API uses
 
   console.log(`[CronJob] Starting processing at ${today.toISOString().split('T')[0]}`);
 
@@ -101,8 +109,7 @@ export async function processDueRecurringTransactions() {
         }
 
         // Check if today is within the recurring period
-        const startDate = new Date(recurring.startDate);
-        startDate.setHours(0, 0, 0, 0);
+        const startDate = utcToday(new Date(recurring.startDate));
         
         if (today < startDate) {
           // Not yet in the period - skip
@@ -168,8 +175,11 @@ export async function processDueRecurringTransactions() {
     );
     if (errors.length > 0) {
       console.error('[CronJob] Errors:', errors);
+      // The others were all processed above; fail the run so the workflow opens an issue.
+      throw new RecurrenceRunError(errors.map((e) => e.recurringId));
     }
   } catch (error) {
+    if (error instanceof RecurrenceRunError) throw error;
     console.error('[CronJob] Fatal error processing recurring transactions:', error);
     throw error; // Re-throw to exit with error code
   }

@@ -29,18 +29,18 @@ afterEach(() => {
 });
 
 const recurrence = () =>
-  seedRecurrence({ householdId: HH, accountId: CARD, description: 'Seguro Beta', amount: 130.31, nextRunAt: '2026-11-24', aliases: ['Pg *Betaseg Conecta'] });
+  seedRecurrence({ householdId: HH, accountId: CARD, description: 'Seguro Beta', amount: 118.47, nextRunAt: '2026-11-18', aliases: ['Pg *Betaseg Digital'] });
 
 describe('processRecurrences job', () => {
   it('does not duplicate the charge captured and confirmed the day before: links it and moves on', async () => {
     const rec = recurrence();
     const capture = seedTransaction({
-      householdId: HH, accountId: CARD, description: 'Pg *Betaseg Conecta', amount: 130.31, date: '2026-11-23', paid: true, sourceRef: 'notif:abc',
+      householdId: HH, accountId: CARD, description: 'Pg *Betaseg Digital', amount: 118.47, date: '2026-11-17', paid: true, sourceRef: 'notif:abc',
     } as never);
     await processDueRecurringTransactions();
     expect(rowsOf('transaction')).toHaveLength(1);
     expect(rowById('transaction', capture.id).recurringTransactionId).toBe(rec.id);
-    expect(rowById('recurringTransaction', rec.id)).toMatchObject({ nextRunAt: '2026-12-24', lastRunDate: '2026-11-24', isActive: true });
+    expect(rowById('recurringTransaction', rec.id)).toMatchObject({ nextRunAt: '2026-12-18', lastRunDate: '2026-11-18', isActive: true });
   });
 
   it('creates the occurrence when nothing was entered', async () => {
@@ -48,7 +48,7 @@ describe('processRecurrences job', () => {
     await processDueRecurringTransactions();
     const created = rowsOf('transaction').filter((t) => t.recurringTransactionId === rec.id);
     expect(created).toHaveLength(1);
-    expect(created[0]).toMatchObject({ description: 'Seguro Beta', date: '2026-11-24', amount: 130.31, paid: true });
-    expect(rowById('recurringTransaction', rec.id)).toMatchObject({ nextRunAt: '2026-12-24' });
+    expect(created[0]).toMatchObject({ description: 'Seguro Beta', date: '2026-11-18', amount: 118.47, paid: true });
+    expect(rowById('recurringTransaction', rec.id)).toMatchObject({ nextRunAt: '2026-12-18' });
   });
 });

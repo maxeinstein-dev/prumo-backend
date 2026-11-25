@@ -1,6 +1,8 @@
+import { lockAccountsInOrder } from '../../shared/db/lock-accounts.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { NotFoundError, BadRequestError } from '../../shared/errors/index.js';
+import { fromCents, toCents } from '../transactions/credit-card-invoice-forecast.js';
 import { closingDayFromDue } from './closing-day.js';
 import { CategoryName, AccountType, TransactionType } from '../../shared/enums/index.js';
 import { applyTransfer, updateBalanceForNormalTransaction, recalculateCreditCardLimit } from '../../shared/services/balance.service.js';
@@ -664,19 +666,26 @@ export async function transferBetweenAccounts(
     throw new BadRequestError('Cannot transfer between accounts with different currencies');
   }
 
-  // Verify sufficient available balance for non-credit accounts
-  if (fromAccount.type !== 'CREDIT') {
-    const currentAvailable = fromAccount.availableBalance?.toNumber() || fromAccount.balance.toNumber();
-    if (currentAvailable < amount) {
-      throw new BadRequestError('Insufficient available balance');
-    }
-  }
-
   // Use TRANSFER category for transfers (categories are now enums)
   const transferCategoryName = CategoryName.TRANSFER;
 
   // Execute transfer in a transaction using BalanceService
   const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    // Verify sufficient available balance for non-credit accounts. BOTH rows are locked, in id order and in one query
+    // (crossed transfers cannot deadlock; two transfers into the same destination cannot overwrite each other), and read
+    // inside the transaction, so two concurrent transfers cannot both pass the check against the same balance.
+    await lockAccountsInOrder(tx, [fromAccountId, toAccountId]);
+    const lockedFrom = await tx.account.findFirst({ where: { id: fromAccountId, householdId, isActive: true } });
+    if (!lockedFrom) {
+      throw new NotFoundError('Source account');
+    }
+    if (lockedFrom.type !== 'CREDIT') {
+      const currentAvailable = lockedFrom.availableBalance?.toNumber() || lockedFrom.balance.toNumber();
+      if (currentAvailable < amount) {
+        throw new BadRequestError('Insufficient available balance');
+      }
+    }
+
     // Apply transfer using BalanceService (updates availableBalance only, not totalBalance)
     await applyTransfer(tx, fromAccountId, toAccountId, amount);
 
@@ -812,6 +821,9 @@ export async function getAccountsSummary(householdId: string) {
     where: { householdId, isActive: true },
   });
 
+  // Totals are summed in integer cents and converted once at the end
+  const typeCents: Record<string, number> = {};
+  const currencyCents: Record<string, number> = {};
   const summary = {
     totalAccounts: accounts.length,
     byType: {} as Record<string, { count: number; total: number }>,
@@ -819,19 +831,22 @@ export async function getAccountsSummary(householdId: string) {
   };
 
   for (const account of accounts) {
+    const cents = toCents(account.balance.toNumber());
+
     // By type
     if (!summary.byType[account.type]) {
       summary.byType[account.type] = { count: 0, total: 0 };
+      typeCents[account.type] = 0;
     }
     summary.byType[account.type].count++;
-    summary.byType[account.type].total += account.balance.toNumber();
+    typeCents[account.type] += cents;
 
     // By currency
-    if (!summary.byCurrency[account.currency]) {
-      summary.byCurrency[account.currency] = 0;
-    }
-    summary.byCurrency[account.currency] += account.balance.toNumber();
+    currencyCents[account.currency] = (currencyCents[account.currency] ?? 0) + cents;
   }
+
+  for (const [type, cents] of Object.entries(typeCents)) summary.byType[type].total = fromCents(cents);
+  for (const [currency, cents] of Object.entries(currencyCents)) summary.byCurrency[currency] = fromCents(cents);
 
   return summary;
 }

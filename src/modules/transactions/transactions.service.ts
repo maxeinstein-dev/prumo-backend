@@ -1,3 +1,4 @@
+import { lockAccountsInOrder } from '../../shared/db/lock-accounts.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { NotFoundError, BadRequestError, ForbiddenError, ConflictError } from '../../shared/errors/index.js';
@@ -15,6 +16,17 @@ import { monthOrRangeWhere, effectiveMonthWhere, addMonths, competenceWithinRang
 import { effectiveClosingDay } from '../accounts/closing-day.js';
 import { executeRecurringTransaction } from '../recurring-transactions/recurring-transactions.service.js';
 import { dayString } from '../recurring-transactions/recurring-dates.js';
+import { openingDebtFromMovements } from './credit-card-opening-debt.js';
+import {
+  invoicePaymentColumnsFromTag,
+  invoicePaymentCardId,
+  invoicePaymentOfCardWhere,
+  invoicePaymentOfInvoiceWhere,
+  invoicePaymentOrdinal,
+  invoicePaymentLink,
+  invoicePaymentWrite,
+  withoutPaymentMarkerWhere,
+} from './invoice-payment-link.js';
 import { fromCents, invoiceDates, invoiceState, loadInvoiceForecast, toCents } from './credit-card-invoice-forecast.js';
 import { applyTransfer, applyAllocation, applyDeallocation, recalculateCreditCardLimit, updateBalanceForNormalTransaction } from '../../shared/services/balance.service.js';
 import type {
@@ -238,7 +250,7 @@ export async function createTransaction(
         ...(input.installmentNumber && { installmentNumber: input.installmentNumber }),
         ...(input.totalInstallments && { totalInstallments: input.totalInstallments }),
         ...(input.sourceRef && { sourceRef: input.sourceRef }),
-        ...(input.attachmentUrl && { attachmentUrl: input.attachmentUrl }),
+        ...(input.attachmentUrl && { attachmentUrl: input.attachmentUrl, ...invoicePaymentColumnsFromTag(input.attachmentUrl) }),
         ...(competenceMonth && { competenceMonth }),
         ...(isRefund && { isRefund }),
       },
@@ -923,7 +935,7 @@ async function updateTransactionOnce(
     }
     // Two moves that cross (A to B and B to A) would lock the two accounts in opposite orders: always take them by id.
     if (accountChanged && oldAccountId && newAccountId) {
-      await tx.$queryRaw`SELECT id FROM accounts WHERE id IN (${Prisma.join([oldAccountId, newAccountId].sort())}) ORDER BY id FOR UPDATE`;
+      await lockAccountsInOrder(tx, [oldAccountId, newAccountId]);
     }
     await options.beforeWrite?.(tx);
 
@@ -1003,7 +1015,8 @@ async function updateTransactionOnce(
         ...(input.installmentId !== undefined && { installmentId: input.installmentId }),
         ...(input.installmentNumber !== undefined && { installmentNumber: input.installmentNumber }),
         ...(input.totalInstallments !== undefined && { totalInstallments: input.totalInstallments }),
-        ...(input.attachmentUrl !== undefined && { attachmentUrl: input.attachmentUrl }),
+        // The payment link follows the text: a changed or cleared attachment changes the columns with it
+        ...(input.attachmentUrl !== undefined && { attachmentUrl: input.attachmentUrl, ...invoicePaymentColumnsFromTag(input.attachmentUrl) }),
         ...(input.sourceRef !== undefined && { sourceRef: input.sourceRef }),
         ...(input.competenceMonth !== undefined && { competenceMonth: input.competenceMonth }),
         ...(finalRefund !== existingTransaction.isRefund && { isRefund: finalRefund }),
@@ -1926,15 +1939,11 @@ export function invoiceOrdinal(year: number, monthNum: number): number {
 }
 
 /**
- * Invoice ordinal of a payment tagged `invoice_pay:<cardId>:<YYYY>-<zero-based month>`; null when the transaction is
- * not a payment of this card or its tag cannot be read.
+ * Invoice ordinal (year * 12 + zero-based month) of the legacy payment text of this card; null when it is not a payment
+ * of this card or the text cannot be read. Rows are read through invoicePaymentOrdinal, which also reads the columns.
  */
 export function parseInvoicePaymentOrdinal(attachmentUrl: string | null | undefined, accountId: string): number | null {
-  const prefix = `invoice_pay:${accountId}:`;
-  if (!attachmentUrl?.startsWith(prefix)) return null;
-  const match = /^(\d{4})-(\d{1,2})$/.exec(attachmentUrl.slice(prefix.length));
-  if (!match) return null;
-  return Number(match[1]) * 12 + Number(match[2]);
+  return invoicePaymentOrdinal({ attachmentUrl }, accountId);
 }
 
 /**
@@ -1952,7 +1961,7 @@ export async function loadInvoicePayments(
   const rows = await client.transaction.findMany({
     where: {
       householdId,
-      attachmentUrl: { startsWith: `invoice_pay:${accountId}:` },
+      ...invoicePaymentOfCardWhere(accountId),
       date: { lte: today },
     },
   });
@@ -1960,7 +1969,7 @@ export async function loadInvoicePayments(
   const previous: typeof rows = [];
   const currentRows: typeof rows = [];
   for (const row of rows) {
-    const ordinal = parseInvoicePaymentOrdinal(row.attachmentUrl, accountId);
+    const ordinal = invoicePaymentOrdinal(row, accountId);
     if (ordinal === null) continue;
     if (ordinal < current) previous.push(row);
     else if (ordinal === current) currentRows.push(row);
@@ -2054,7 +2063,7 @@ export async function calculateCreditCardInvoice(
       accountId,
       householdId,
       date: { lt: invoiceStart },
-      attachmentUrl: { equals: null }, // Exclude payment transactions
+      ...withoutPaymentMarkerWhere(), // Exclude payment transactions
     },
   });
 
@@ -2091,7 +2100,7 @@ export async function calculateCreditCardInvoice(
       where: {
         OR: [
           { accountId, householdId, date: { gte: invoiceStart, lte: invoiceEnd } },
-          { householdId, attachmentUrl: { startsWith: `invoice_pay:${accountId}:` }, date: { gte: invoiceStart, lte: invoiceEnd } },
+          { householdId, ...invoicePaymentOfCardWhere(accountId), date: { gte: invoiceStart, lte: invoiceEnd } },
         ],
       },
     });
@@ -2099,7 +2108,7 @@ export async function calculateCreditCardInvoice(
       where: {
         OR: [
           { accountId, householdId, date: { gt: invoiceEnd } },
-          { householdId, attachmentUrl: { startsWith: `invoice_pay:${accountId}:` }, date: { gt: invoiceEnd } },
+          { householdId, ...invoicePaymentOfCardWhere(accountId), date: { gt: invoiceEnd } },
         ],
       },
     });
@@ -2111,25 +2120,8 @@ export async function calculateCreditCardInvoice(
     } else {
       // Has movements from this invoice on, but none before
       // Calculate net change from this invoice on
-      let currentPeriodNetChange = 0;
-      for (const t of movementsFromPeriod) {
-        if (t.attachmentUrl?.startsWith(`invoice_pay:${accountId}:`)) {
-          // Payment decreases debt
-          currentPeriodNetChange -= t.amount.toNumber();
-        } else if (t.accountId === accountId && t.categoryName) {
-          // Use transaction type if available, otherwise infer from category
-          const isIncome = t.type === TransactionType.INCOME || 
-            (t.type !== TransactionType.EXPENSE && getCategoriesByType(CategoryType.INCOME).includes(t.categoryName as any));
-          if (isIncome) {
-            currentPeriodNetChange -= t.amount.toNumber(); // Income decreases debt
-          } else {
-            currentPeriodNetChange += t.amount.toNumber(); // Expense increases debt
-          }
-        }
-      }
-      
-      // Initial balance = current balance - current period net change
-      previousBalance = Math.max(0, account.balance.toNumber() - currentPeriodNetChange);
+      // Opening debt = current balance minus what this period's movements did to it (summed in cents)
+      previousBalance = openingDebtFromMovements(account.balance, movementsFromPeriod, accountId);
     }
   }
 
@@ -2139,7 +2131,7 @@ export async function calculateCreditCardInvoice(
       accountId,
       householdId,
       date: { gte: invoiceStart, lte: invoiceEnd },
-      attachmentUrl: { equals: null }, // Exclude payment transactions
+      ...withoutPaymentMarkerWhere(), // Exclude payment transactions
     },
   });
 
@@ -2159,8 +2151,7 @@ export async function calculateCreditCardInvoice(
 
   // Get payment transactions for this invoice period
   // monthKey format: "YYYY-M" where M is 0-indexed (0-11)
-  const monthKey = `${year}-${monthNum - 1}`;
-  const technicalIdentifier = `invoice_pay:${accountId}:${monthKey}`;
+  const invoiceMonth = `${String(year).padStart(4, '0')}-${String(monthNum).padStart(2, '0')}`;
   
   const currentPayments = payments.currentRows;
   const currentPaymentsTotal = payments.currentTotal;
@@ -2179,7 +2170,7 @@ export async function calculateCreditCardInvoice(
       },
       {
         householdId,
-        attachmentUrl: technicalIdentifier,
+        ...invoicePaymentOfInvoiceWhere(accountId, invoiceMonth),
       },
     ],
   };
@@ -2285,7 +2276,9 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
   // Parse month
   const [year, monthNum] = month.split('-').map(Number);
   const monthKey = `${year}-${monthNum - 1}`;
-  const technicalIdentifier = `invoice_pay:${accountId}:${monthKey}`;
+  // The payment link: columns and the legacy text, written together
+  const paymentLink = invoicePaymentWrite(accountId, `${String(year).padStart(4, '0')}-${String(monthNum).padStart(2, '0')}`);
+  const technicalIdentifier = paymentLink.attachmentUrl;
 
   return await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     // 1. Verify credit card account
@@ -2327,7 +2320,7 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         accountId,
         householdId: householdId!,
         date: { lt: invoiceMonthStart },
-        attachmentUrl: { equals: null },
+        ...withoutPaymentMarkerWhere(),
       },
     });
 
@@ -2367,7 +2360,7 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         where: {
           OR: [
             { accountId, householdId: householdId!, date: { gte: invoiceMonthStart, lte: invoiceMonthEnd } },
-            { householdId: householdId!, attachmentUrl: { startsWith: `invoice_pay:${accountId}:` }, date: { gte: invoiceMonthStart, lte: invoiceMonthEnd } },
+            { householdId: householdId!, ...invoicePaymentOfCardWhere(accountId), date: { gte: invoiceMonthStart, lte: invoiceMonthEnd } },
           ],
         },
       });
@@ -2378,25 +2371,8 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
       } else {
         // Has transactions in current period but none before
         // Calculate net change in current period
-        let currentPeriodNetChange = 0;
-        for (const t of currentPeriodTransactions) {
-          if (t.attachmentUrl?.startsWith(`invoice_pay:${accountId}:`)) {
-            // Payment decreases debt
-            currentPeriodNetChange -= t.amount.toNumber();
-        } else if (t.accountId === accountId && t.categoryName) {
-          // Use transaction type if available, otherwise infer from category
-          const isIncome = t.type === TransactionType.INCOME || 
-            (t.type !== TransactionType.EXPENSE && getCategoriesByType(CategoryType.INCOME).includes(t.categoryName as any));
-          if (isIncome) {
-            currentPeriodNetChange -= t.amount.toNumber(); // Income decreases debt
-          } else {
-            currentPeriodNetChange += t.amount.toNumber(); // Expense increases debt
-          }
-        }
-      }
-        
-        // Initial balance = current balance - current period net change
-        invoicePreviousBalance = Math.max(0, creditCard.balance.toNumber() - currentPeriodNetChange);
+        // Opening debt = current balance minus what this period's movements did to it (summed in cents)
+        invoicePreviousBalance = openingDebtFromMovements(creditCard.balance, currentPeriodTransactions, accountId);
       }
     }
 
@@ -2406,7 +2382,7 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         accountId,
         householdId: householdId!,
         date: { gte: invoiceMonthStart, lte: invoiceMonthEnd },
-        attachmentUrl: { equals: null },
+        ...withoutPaymentMarkerWhere(),
       },
     });
 
@@ -2456,13 +2432,13 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         description: description || `Pagamento de fatura - ${month}`,
         date: paymentDate ?? new Date(),
         paid: true,
-        attachmentUrl: technicalIdentifier,
+        ...paymentLink,
       },
     });
 
     // Structured log so the payment's technical identifier can be compared against
-    // the frontend invoice filter (CreditCards.tsx builds the same
-    // `invoice_pay:${cardId}:${year}-${zeroBasedMonth}` string). If the frontend
+    // the frontend invoice filter (CreditCards.tsx builds the same legacy text, see
+    // invoice-payment-link.ts). If the frontend
     // does not surface this payment, compare `technicalIdentifier` and `paymentDate`
     // below with the month bucket being viewed: a payment is stored with today's date,
     // so paying an invoice in a later month lands it outside that month's bucket.
@@ -2515,7 +2491,7 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         householdId: householdId!,
         date: { gte: invoiceMonthStart, lte: invoiceMonthEnd },
         paid: false,
-        attachmentUrl: { equals: null }, // Only purchases, not payments
+        ...withoutPaymentMarkerWhere(), // Only purchases, not payments
       },
       data: {
         paid: true,
@@ -2555,7 +2531,7 @@ export async function undoCreditCardPayment(
       where: {
         id: input.transactionId,
         householdId,
-        attachmentUrl: { not: null },
+        OR: [{ attachmentUrl: { not: null } }, { invoicePaymentAccountId: { not: null } }],
       },
     });
 
@@ -2563,7 +2539,7 @@ export async function undoCreditCardPayment(
       throw new NotFoundError('Payment transaction');
     }
 
-    if (!paymentTransaction.attachmentUrl?.startsWith(`invoice_pay:${input.accountId}:`)) {
+    if (invoicePaymentCardId(paymentTransaction) !== input.accountId) {
       throw new BadRequestError('Transaction is not a payment for this credit card');
     }
 
@@ -2580,17 +2556,13 @@ export async function undoCreditCardPayment(
       throw new BadRequestError('Account is not a credit card');
     }
 
-    // 3. Extract month from attachmentUrl
-    // Format: invoice_pay:accountId:YYYY-M (where M is 0-indexed, 0-11)
-    const monthMatch = paymentTransaction.attachmentUrl.match(/invoice_pay:[^:]+:(\d{4}-\d+)/);
-    if (!monthMatch) {
+    // 3. Invoice month the payment belongs to (columns, or the legacy text of an older payment)
+    const paymentLink = invoicePaymentLink(paymentTransaction);
+    if (!paymentLink) {
       throw new BadRequestError('Invalid payment transaction format');
     }
 
-    const monthKey = monthMatch[1];
-    const [year, monthIndex] = monthKey.split('-').map(Number);
-    // monthIndex is 0-indexed (0-11), convert to 1-indexed for Date constructor
-    const monthNum = monthIndex + 1;
+    const [year, monthNum] = paymentLink.month.split('-').map(Number);
     
     const undoWindow = creditCardInvoiceWindow(year, monthNum, effectiveClosingDay(creditCard));
     const monthStart = undoWindow.start;
@@ -2635,7 +2607,7 @@ export async function undoCreditCardPayment(
           lte: paymentTransaction.date < monthEnd ? paymentTransaction.date : monthEnd,
         },
         paid: true,
-        attachmentUrl: { equals: null }, // Only purchases, not payments
+        ...withoutPaymentMarkerWhere(), // Only purchases, not payments
       },
       data: {
         paid: false,

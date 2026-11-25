@@ -629,6 +629,21 @@ export async function executeRecurringTransaction(
         }
       }
     }
+    if (!payNow && recurring.frequency !== 'MONTHLY') {
+      // Every other frequency has no month to guard, but the same race: the job, "execute now" or two clicks read "no
+      // occurrence on this date" before either writes. Under the same per-recurrence lock, the occurrence of this exact
+      // date (what the job's own pre-check looks for) is taken as done: nothing is created and the recurrence moves on.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`recurring:${recurring.id}`}))`;
+      const sameDay = await tx.transaction.findFirst({
+        where: { householdId, recurringTransactionId: recurring.id, date: transactionDate },
+        include: { account: { select: { id: true, name: true, type: true } } },
+      });
+      if (sameDay) {
+        const nextRunAt = calculateNextRunDate(transactionDate, recurring.frequency, anchorDay);
+        await tx.recurringTransaction.update({ where: { id: recurringId }, data: { lastRunDate: transactionDate, nextRunAt } });
+        return { transaction: sameDay, nextRunAt, skipped: true as boolean };
+      }
+    }
     if (recurring.frequency === 'MONTHLY' && !payNow) {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`recurring:${recurring.id}`}))`;
       const { start, end } = monthBoundsUtc(dayString(transactionDate));

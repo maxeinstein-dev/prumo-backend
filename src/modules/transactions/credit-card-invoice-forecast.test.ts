@@ -10,9 +10,11 @@ const inDate = (d: Date, c: any) =>
   !(c.lte && d.getTime() > c.lte.getTime()) && !(c.lt && d.getTime() >= c.lt.getTime());
 
 function matches(row: Row, where: Record<string, any>): boolean {
-  if (where.OR) return (where.OR as Row[]).some((w) => matches(row, w));
+  // OR is one more condition next to the sibling keys, and a missing field reads as null (as the columns do in the database)
+  if (where.OR && !(where.OR as Row[]).some((w) => matches(row, w))) return false;
   for (const [key, cond] of Object.entries(where)) {
-    const value = row[key];
+    if (key === 'OR') continue;
+    const value = row[key] ?? null;
     if (key === 'date') {
       if (!inDate(row.date, cond)) return false;
     } else if (cond !== null && typeof cond === 'object') {

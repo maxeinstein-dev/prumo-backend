@@ -384,16 +384,16 @@ describe('preview: the sheet takes over a recurrence', () => {
 
 describe('preview: aliases of a recurrence', () => {
   it('a sheet row named after an alias takes over the recurrence, and serves one row only', async () => {
-    seedRecurrence({ householdId: HH, accountId: BILLS, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-10-05', aliases: ['Pg *Seguro Alfa Conecta'] });
-    const preview = await previewCsv({ bills: [['Pg *Seguro Alfa Conecta', 'Casa', 87.4], ['Seguro Alfa', 'Casa', 87.4]] });
-    expect(rowNamed(preview, 'Pg *Seguro Alfa Conecta').status).toBe('matches-recurring');
+    seedRecurrence({ householdId: HH, accountId: BILLS, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-10-05', aliases: ['Pg *Seguro Alfa Digital'] });
+    const preview = await previewCsv({ bills: [['Pg *Seguro Alfa Digital', 'Casa', 87.4], ['Seguro Alfa', 'Casa', 87.4]] });
+    expect(rowNamed(preview, 'Pg *Seguro Alfa Digital').status).toBe('matches-recurring');
     expect(rowNamed(preview, 'Seguro Alfa').status).toBe('new');
   });
 
   it('a generated occurrence is also found through the alias of its recurrence', async () => {
-    const rec = seedRecurrence({ householdId: HH, accountId: BILLS, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-11-05', aliases: ['Seguro Alfa Conecta'] });
+    const rec = seedRecurrence({ householdId: HH, accountId: BILLS, description: 'Seguro Alfa', amount: 90, nextRunAt: '2026-11-05', aliases: ['Seguro Alfa Digital'] });
     const tx = generated(rec.id, { description: 'Seguro Alfa', amount: 90 });
-    const row = rowNamed(await previewCsv({ bills: [['Seguro Alfa Conecta', 'Casa', 87.4]] }), 'Seguro Alfa Conecta');
+    const row = rowNamed(await previewCsv({ bills: [['Seguro Alfa Digital', 'Casa', 87.4]] }), 'Seguro Alfa Digital');
     expect(row).toMatchObject({ status: 'matches-recurring', existingTransactionId: tx.id });
   });
 

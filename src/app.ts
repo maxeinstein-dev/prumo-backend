@@ -8,7 +8,7 @@ import swaggerUi from '@fastify/swagger-ui';
 
 import { env, isProduction, isLocalAuth } from './shared/config/env.js';
 import { initializeFirebase } from './shared/config/firebase.js';
-import { connectDatabase, disconnectDatabase } from './shared/db/prisma.js';
+import { connectDatabase, disconnectDatabase, prisma } from './shared/db/prisma.js';
 import { runMigrations } from './shared/db/migrations.js';
 import { errorHandler } from './shared/errors/error-handler.js';
 
@@ -32,6 +32,8 @@ import { dashboardRoutes } from './modules/dashboard/index.js';
 import { deviceRoutes } from './modules/devices/index.js';
 import { captureRoutes } from './modules/captures/index.js';
 import { buildCommit } from './shared/utils/buildInfo.js';
+import { registerDbHealthRoute } from './shared/health/db-health.js';
+import { checkCorsOrigin } from './shared/utils/cors-origin.js';
 import { payrollRoutes } from './modules/payroll/index.js';
 import { organizeRoutes, peopleRoutes, settlementRoutes, transactionSharesRoutes } from './modules/people/index.js';
 
@@ -183,7 +185,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   // CORS
-  // Allow localhost (any port) and any domain containing "recta.app"
+  // Hosts are compared exactly (see checkCorsOrigin): local hosts, recta.app and its subdomains, ALLOWED_ORIGINS.
   await app.register(cors, {
     origin: (origin, callback) => {
       // Allow requests with no origin (like mobile apps or curl requests)
@@ -194,42 +196,16 @@ export async function buildApp(): Promise<FastifyInstance> {
         callback(null, true);
         return;
       }
-      
-      // Allow localhost (any protocol, any port)
-      if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+
+      const decision = checkCorsOrigin(origin, { isProduction, allowedOrigins: env.ALLOWED_ORIGINS });
+      if (decision.allowed) {
         if (isProduction) {
-          console.log(`[CORS] Allowing localhost origin: ${origin}`);
+          console.log(`[CORS] Allowing origin (${decision.reason}): ${origin}`);
         }
         callback(null, true);
         return;
       }
-      
-      // Allow any domain containing "recta.app"
-      if (origin.includes('recta.app')) {
-        if (isProduction) {
-          console.log(`[CORS] Allowing recta.app origin: ${origin}`);
-        }
-        callback(null, true);
-        return;
-      }
-      
-      // In development, allow all origins
-      if (!isProduction) {
-        callback(null, true);
-        return;
-      }
-      
-      // In production, check ALLOWED_ORIGINS env var for additional origins
-      const allowedOrigins = env.ALLOWED_ORIGINS;
-      if (allowedOrigins) {
-        const allowedList = allowedOrigins.split(',').map(o => o.trim()).filter(Boolean);
-        if (allowedList.includes(origin)) {
-          console.log(`[CORS] Allowing origin from ALLOWED_ORIGINS: ${origin}`);
-          callback(null, true);
-          return;
-        }
-      }
-      
+
       // Reject if none of the above conditions match
       console.warn(`[CORS] Rejecting origin: ${origin}`);
       callback(new Error('Not allowed by CORS'), false);
@@ -260,6 +236,10 @@ export async function buildApp(): Promise<FastifyInstance> {
       return request.authUser?.uid || request.ip;
     },
   });
+
+  // Database health check. Registered after the rate limit on purpose: /health is registered before it and is not
+  // limited, while this one wakes the database, so it must be.
+  await registerDbHealthRoute(app, prisma);
 
   // Multipart (file uploads — used by POST /transactions/import/preview)
   await app.register(multipart, {

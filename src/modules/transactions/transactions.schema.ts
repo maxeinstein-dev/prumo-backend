@@ -47,7 +47,7 @@ export const createTransactionSchema = z.object({
   installmentId: z.string().optional(),
   installmentNumber: z.number().int().positive().optional(),
   totalInstallments: z.number().int().positive().optional(),
-  attachmentUrl: z.string().max(500).optional(), // Pode ser URL ou identificador técnico (ex: invoice_pay:xxx:xxx)
+  attachmentUrl: z.string().max(500).optional(), // Pode ser URL ou identificador técnico do pagamento de fatura (ver invoice-payment-link.ts)
   sourceRef: z.string().max(120).optional(), // Identificador de origem de importação (dedup exata / reimportação idempotente)
   competenceMonth: competenceMonthSchema.nullish(), // Mês de referência (INCOME/EXPENSE); null/omitido = mês da data
   isRefund: z.boolean().optional(), // Estorno: receita que cancela uma despesa (só INCOME); não conta como receita
@@ -132,7 +132,7 @@ export const updateTransactionSchema = z.object({
   installmentId: z.string().nullable().optional(),
   installmentNumber: z.number().int().positive().nullable().optional(),
   totalInstallments: z.number().int().positive().nullable().optional(),
-  attachmentUrl: z.string().max(500).nullable().optional(), // Pode ser URL ou identificador técnico (ex: invoice_pay:xxx:xxx)
+  attachmentUrl: z.string().max(500).nullable().optional(), // Pode ser URL ou identificador técnico do pagamento de fatura (ver invoice-payment-link.ts)
   competenceMonth: competenceMonthSchema.nullable().optional(), // Mês de referência; null limpa (volta ao mês da data)
   isRefund: z.boolean().optional(), // Estorno (só INCOME)
 });
@@ -232,7 +232,7 @@ export const payInvoiceSchema = z.object({
   householdId: z.string().uuid().optional(), // Optional - will use personal household if not provided
   sourceAccountId: z.string().uuid(), // Conta bancária que vai pagar
   amount: z.coerce.number().positive().optional(), // Valor a pagar (opcional, se não fornecido usa o total da fatura)
-  month: z.string().regex(/^\d{4}-\d{2}$/, 'Month must be in format YYYY-MM'), // "YYYY-MM"
+  month: z.string().regex(COMPETENCE_MONTH_RE, 'Month must be in format YYYY-MM'), // "YYYY-MM"
   description: z.string().max(255).optional(),
   paymentDate: localDateSchema.optional(), // Data do lançamento de pagamento (default: hoje). Usado por importações de meses fechados.
 });
@@ -244,7 +244,7 @@ export type PayInvoiceInput = z.infer<typeof payInvoiceSchema>;
  */
 export const creditCardInvoiceParamsSchema = z.object({
   accountId: z.string().uuid(),
-  month: z.string().regex(/^\d{4}-\d{2}$/, 'Month must be in format YYYY-MM'),
+  month: z.string().regex(COMPETENCE_MONTH_RE, 'Month must be in format YYYY-MM'),
 });
 
 export type CreditCardInvoiceParams = z.infer<typeof creditCardInvoiceParamsSchema>;
