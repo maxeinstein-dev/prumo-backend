@@ -37,14 +37,19 @@ function hasUtf8Bom(buffer: Buffer): boolean {
   return buffer.length >= UTF8_BOM.length && UTF8_BOM.every((byte, index) => buffer[index] === byte);
 }
 
+// What windows-1252 puts in 0x80-0x9F, where latin1 has C1 control characters. The five undefined bytes (0x81, 0x8D,
+// 0x8F, 0x90, 0x9D) stay as the control character of the same code, as the WHATWG decoder does.
+const CP1252_HIGH: readonly number[] = [
+  0x20ac, 0x0081, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008d, 0x017d, 0x008f,
+  0x0090, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0x009d, 0x017e, 0x0178,
+];
+
+/**
+ * Decoded by hand instead of with TextDecoder('windows-1252'): some Node versions (20 among them) answer that label with
+ * plain latin1, so the euro sign and the curly quotes of an Excel export came out as control characters.
+ */
 function decodeWindows1252(bytes: Buffer): string {
-  try {
-    return new TextDecoder('windows-1252').decode(bytes);
-  } catch {
-    // Node builds without ICU cannot construct this decoder. latin1 matches
-    // cp1252 everywhere except the 0x80-0x9F range, which is close enough.
-    return bytes.toString('latin1');
-  }
+  return bytes.toString('latin1').replace(/[\u0080-\u009f]/g, (c) => String.fromCharCode(CP1252_HIGH[c.charCodeAt(0) - 0x80]));
 }
 
 /**
