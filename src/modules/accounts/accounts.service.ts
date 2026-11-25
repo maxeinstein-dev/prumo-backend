@@ -665,19 +665,25 @@ export async function transferBetweenAccounts(
     throw new BadRequestError('Cannot transfer between accounts with different currencies');
   }
 
-  // Verify sufficient available balance for non-credit accounts
-  if (fromAccount.type !== 'CREDIT') {
-    const currentAvailable = fromAccount.availableBalance?.toNumber() || fromAccount.balance.toNumber();
-    if (currentAvailable < amount) {
-      throw new BadRequestError('Insufficient available balance');
-    }
-  }
-
   // Use TRANSFER category for transfers (categories are now enums)
   const transferCategoryName = CategoryName.TRANSFER;
 
   // Execute transfer in a transaction using BalanceService
   const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    // Verify sufficient available balance for non-credit accounts. The source row is locked and read inside the
+    // transaction, so two concurrent transfers cannot both pass the check against the same balance.
+    await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${fromAccountId}::uuid FOR UPDATE`;
+    const lockedFrom = await tx.account.findFirst({ where: { id: fromAccountId, householdId, isActive: true } });
+    if (!lockedFrom) {
+      throw new NotFoundError('Source account');
+    }
+    if (lockedFrom.type !== 'CREDIT') {
+      const currentAvailable = lockedFrom.availableBalance?.toNumber() || lockedFrom.balance.toNumber();
+      if (currentAvailable < amount) {
+        throw new BadRequestError('Insufficient available balance');
+      }
+    }
+
     // Apply transfer using BalanceService (updates availableBalance only, not totalBalance)
     await applyTransfer(tx, fromAccountId, toAccountId, amount);
 
