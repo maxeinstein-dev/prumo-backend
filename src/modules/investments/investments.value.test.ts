@@ -124,9 +124,9 @@ describe('valueFixedIncomePosition: % of the CDI (and of the Selic), compounded 
     expect(v.ratesCarried).toBe(false);
   });
 
-  it('91% of the CDI: the daily rate is 0,05% x 0,91 = 0,0455%; 1000 x 1,000455^5 = 1002,2770... -> 1002,28', () => {
-    const v = valueFixedIncomePosition({ movements: opening, indexer: 'CDI', rate: 91, maturityDate: null, anchor: null, rates: cdi, asOf: '2026-11-09' });
-    expect(v.valueCents).toBe(100228);
+  it('90% of the CDI: the daily rate is 0,05% x 0,90 = 0,045%; 1000 x 1,00045^5 = 1002,2520... -> 1002,25', () => {
+    const v = valueFixedIncomePosition({ movements: opening, indexer: 'CDI', rate: 90, maturityDate: null, anchor: null, rates: cdi, asOf: '2026-11-09' });
+    expect(v.valueCents).toBe(100225);
     // and not the 100% result
     expect(v.valueCents).not.toBe(100250);
   });

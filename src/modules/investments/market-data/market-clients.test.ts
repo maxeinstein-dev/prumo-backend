@@ -7,28 +7,76 @@ const TOKEN = 'tok-invented-123456';
 const json = (body: unknown, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response;
 const asFetch = (f: unknown) => f as unknown as typeof fetch;
 
-describe('brapi client', () => {
-  const answer = {
-    results: [
-      { symbol: 'TEST11', regularMarketPrice: 10.25, regularMarketTime: '2026-11-25T20:07:49.000Z', currency: 'BRL' },
-      { symbol: 'ABCD3', regularMarketPrice: 33.1, regularMarketTime: 1795636800, currency: 'BRL' }, // unix seconds
-    ],
-  };
+describe('brapi client (one request per ticker, like the Rende)', () => {
+  const one = (symbol: string, price: unknown, time: unknown = '2026-11-25T20:07:49.000Z') =>
+    json({ results: [{ symbol, regularMarketPrice: price, regularMarketTime: time, currency: 'BRL' }] });
+  /** Answers by the ticker in the URL. */
+  const byTicker = (table: Record<string, () => Response | Promise<Response>>) =>
+    vi.fn(async (url: string) => table[url.split('/').pop()!]!());
 
-  it('asks for all the tickers in ONE call, sends the token only in the Authorization header', async () => {
-    const fetchFn = vi.fn(async () => json(answer));
-    const client = createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn), today: () => '2026-11-26' });
-    const r = await client.fetchQuotes(['test11', 'ABCD3']);
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('https://brapi.dev/api/quote/TEST11,ABCD3');
-    expect(url).not.toContain(TOKEN);
-    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`);
+  it('makes ONE request per ticker (never several in one URL), the token only in the Authorization header', async () => {
+    const fetchFn = byTicker({
+      TEST11: () => one('TEST11', 10.25),
+      ABCD3: () => one('ABCD3', 33.1, 1795636800), // unix seconds
+    });
+    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn), today: () => '2026-11-26' }).fetchQuotes(['test11', 'ABCD3']);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const calls = fetchFn.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map((c) => c[0]).sort()).toEqual(['https://brapi.dev/api/quote/ABCD3', 'https://brapi.dev/api/quote/TEST11']);
+    for (const [url, init] of calls) {
+      expect(url).not.toContain(TOKEN);
+      expect(url).not.toContain(',');
+      expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`);
+    }
     expect(r.warnings).toEqual([]);
     expect(r.quotes).toEqual([
       { ticker: 'TEST11', date: '2026-11-25', close: 10.25 },
       { ticker: 'ABCD3', date: '2026-11-25', close: 33.1 },
     ]);
+  });
+
+  it('a ticker repeated in the list is asked once', async () => {
+    const fetchFn = byTicker({ TEST11: () => one('TEST11', 10) });
+    await createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn) }).fetchQuotes(['TEST11', 'test11']);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('the failure of one ticker is a warning about that ticker only; the others are kept', async () => {
+    const fetchFn = byTicker({
+      TEST11: () => one('TEST11', 10.25),
+      ABCD3: () => json({ message: `bad ${TOKEN}` }, 404),
+      ZZZZ3: () => {
+        throw new Error(`connect ECONNRESET Bearer ${TOKEN}`);
+      },
+      NOPE4: () => json({ results: [] }),
+      ZERO3: () => one('ZERO3', 0),
+      TEXT3: () => one('TEXT3', 'oops'),
+    });
+    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn), today: () => '2026-11-26' }).fetchQuotes(['TEST11', 'ABCD3', 'ZZZZ3', 'NOPE4', 'ZERO3', 'TEXT3']);
+    expect(r.quotes.map((q) => q.ticker)).toEqual(['TEST11']);
+    expect(r.warnings).toHaveLength(5);
+    for (const t of ['ABCD3', 'ZZZZ3', 'NOPE4', 'ZERO3', 'TEXT3']) expect(r.warnings.filter((w) => w.includes(t))).toHaveLength(1);
+    expect(r.warnings.find((w) => w.includes('ABCD3'))).toContain('404');
+    expect(JSON.stringify(r)).not.toContain(TOKEN);
+  });
+
+  it('never has more than 3 requests in flight at the same time, and still asks them all', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const fetchFn = vi.fn(async (url: string) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((res) => setTimeout(res, 15));
+      inFlight -= 1;
+      const t = url.split('/').pop()!;
+      return one(t, 5);
+    });
+    const tickers = ['AAAA3', 'BBBB3', 'CCCC3', 'DDDD3', 'EEEE3', 'FFFF3', 'GGGG3'];
+    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn), today: () => '2026-11-26' }).fetchQuotes(tickers);
+    expect(fetchFn).toHaveBeenCalledTimes(7);
+    expect(peak).toBeLessThanOrEqual(3);
+    expect(peak).toBeGreaterThan(1);
+    expect(r.quotes.map((q) => q.ticker)).toEqual(tickers); // the order of the request is kept
   });
 
   it('without a token it makes no call and warns', async () => {
@@ -53,48 +101,17 @@ describe('brapi client', () => {
     expect(r).toEqual({ quotes: [], warnings: [] });
   });
 
-  it('a network error becomes a warning and never leaks the token (even if the error message has it)', async () => {
-    const fetchFn = vi.fn(async () => {
-      throw new Error(`connect ECONNRESET Authorization: Bearer ${TOKEN}`);
+  it('a timeout is per call: the slow ticker becomes its own warning and the fast one is kept', async () => {
+    const fetchFn = vi.fn((url: string, init: RequestInit) => {
+      if (url.endsWith('/TEST11')) return Promise.resolve(one('TEST11', 10.25));
+      return new Promise<Response>((_res, rej) => {
+        init.signal?.addEventListener('abort', () => rej(new Error('aborted')));
+      });
     });
-    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn) }).fetchQuotes(['TEST11']);
-    expect(r.quotes).toEqual([]);
-    expect(r.warnings).toHaveLength(1);
-    expect(JSON.stringify(r)).not.toContain(TOKEN);
-  });
-
-  it('a timeout becomes a warning (the request is aborted)', async () => {
-    const fetchFn = vi.fn(
-      (_url: string, init: RequestInit) =>
-        new Promise<Response>((_res, rej) => {
-          init.signal?.addEventListener('abort', () => rej(new Error('aborted')));
-        }),
-    );
-    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn), timeoutMs: 20 }).fetchQuotes(['TEST11']);
-    expect(r.quotes).toEqual([]);
-    expect(r.warnings.join(' ')).toMatch(/timeout/i);
-  });
-
-  it('an HTTP error becomes a warning with the status only', async () => {
-    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(async () => json({ message: `bad ${TOKEN}` }, 401)) }).fetchQuotes(['TEST11']);
-    expect(r.quotes).toEqual([]);
-    expect(r.warnings.join(' ')).toContain('401');
-    expect(JSON.stringify(r)).not.toContain(TOKEN);
-  });
-
-  it('keeps the good tickers and warns about the bad ones (zero, text, unknown ticker)', async () => {
-    const body = {
-      results: [
-        { symbol: 'TEST11', regularMarketPrice: 10.25, regularMarketTime: '2026-11-25T20:00:00.000Z' },
-        { symbol: 'ABCD3', regularMarketPrice: 0 },
-        { symbol: 'ZZZZ3', regularMarketPrice: 'oops' },
-      ],
-    };
-    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(async () => json(body)), today: () => '2026-11-26' }).fetchQuotes(['TEST11', 'ABCD3', 'ZZZZ3', 'NOPE4']);
+    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn), timeoutMs: 20, today: () => '2026-11-26' }).fetchQuotes(['TEST11', 'SLOW3']);
     expect(r.quotes.map((q) => q.ticker)).toEqual(['TEST11']);
-    expect(r.warnings.join(' ')).toMatch(/ABCD3/);
-    expect(r.warnings.join(' ')).toMatch(/ZZZZ3/);
-    expect(r.warnings.join(' ')).toMatch(/NOPE4/);
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0]).toMatch(/timeout.*SLOW3/i);
   });
 
   it('a close without a time takes the day of the run', async () => {
@@ -113,10 +130,11 @@ describe('brapi client', () => {
     expect(r.warnings).toHaveLength(1);
   });
 
-  it('a body that is not the expected shape is a warning', async () => {
+  it('a body that is not the expected shape is a warning for that ticker', async () => {
     const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(async () => json('<html>')) }).fetchQuotes(['TEST11']);
     expect(r.quotes).toEqual([]);
     expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0]).toContain('TEST11');
   });
 });
 

@@ -1,5 +1,6 @@
 /**
- * Client of brapi.dev (P21 L2): closing quotes of several tickers in ONE call.
+ * Client of brapi.dev (P21 L2): closing quotes, ONE request per ticker (`/quote/<TICKER>`, reading results[0], as the Rende does in production: the
+ * free plan takes one asset per request), at most 3 at the same time, each with its own timeout.
  *
  * The token (BRAPI_TOKEN) goes only in the Authorization header. It is never put in the URL, never logged, never part
  * of a warning: failures are reported with fixed texts and, at most, the HTTP status. The client never throws for a
@@ -34,6 +35,7 @@ export interface BrapiOptions {
 }
 
 const TICKER = /^[A-Z0-9]{1,12}$/;
+const MAX_IN_FLIGHT = 3;
 
 function dayOfTime(value: unknown): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return new Date(value * 1000).toISOString().slice(0, 10);
@@ -50,6 +52,30 @@ export function createBrapiClient(options: BrapiOptions): BrapiClient {
   const baseUrl = options.baseUrl ?? 'https://brapi.dev/api/quote';
   const today = options.today ?? (() => new Date().toISOString().slice(0, 10));
 
+  async function fetchOne(ticker: string): Promise<{ quote?: FetchedQuote; warning?: string }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await doFetch(`${baseUrl}/${ticker}`, {
+        headers: { Authorization: `Bearer ${options.token!.trim()}`, Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      if (!response.ok) return { warning: `brapi answered HTTP ${response.status} for ${ticker}: quote not updated` };
+      const body = (await response.json()) as { results?: unknown } | null;
+      const results = body?.results;
+      if (!Array.isArray(results)) return { warning: `brapi answered in an unexpected format for ${ticker}: quote not updated` };
+      const item = results[0] as Record<string, unknown> | undefined; // as the Rende does: results[0]
+      if (!item) return { warning: `No quote returned for ${ticker}` };
+      const price = item.regularMarketPrice;
+      if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return { warning: `No usable price for ${ticker}` };
+      return { quote: { ticker, date: dayOfTime(item.regularMarketTime) ?? today(), close: price } };
+    } catch {
+      return { warning: `brapi unavailable (${controller.signal.aborted ? 'timeout' : 'network error'}) for ${ticker}: quote not updated` };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   return {
     async fetchQuotes(requested) {
       const warnings: string[] = [];
@@ -62,41 +88,22 @@ export function createBrapiClient(options: BrapiOptions): BrapiClient {
       for (const t of wanted) if (!TICKER.test(t)) warnings.push('Ignored a malformed ticker');
       if (valid.length === 0) return { quotes: [], warnings };
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      let body: unknown;
-      try {
-        const response = await doFetch(`${baseUrl}/${valid.join(',')}`, {
-          headers: { Authorization: `Bearer ${options.token.trim()}`, Accept: 'application/json' },
-          signal: controller.signal,
-        });
-        if (!response.ok) return { quotes: [], warnings: [...warnings, `brapi answered HTTP ${response.status}: quotes not updated`] };
-        body = await response.json();
-      } catch {
-        const reason = controller.signal.aborted ? 'timeout' : 'network error';
-        return { quotes: [], warnings: [...warnings, `brapi unavailable (${reason}): quotes not updated`] };
-      } finally {
-        clearTimeout(timer);
-      }
-
-      const results = (body as { results?: unknown } | null)?.results;
-      if (!Array.isArray(results)) return { quotes: [], warnings: [...warnings, 'brapi answered in an unexpected format: quotes not updated'] };
-
-      const quotes: FetchedQuote[] = [];
-      const seen = new Set<string>();
-      for (const item of results as Array<Record<string, unknown>>) {
-        const symbol = typeof item?.symbol === 'string' ? item.symbol.toUpperCase() : '';
-        const price = item?.regularMarketPrice;
-        if (!valid.includes(symbol)) continue;
-        if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) {
-          warnings.push(`No usable price for ${symbol}`);
-          seen.add(symbol);
-          continue;
+      // One request per ticker (the free plan takes one asset per request), at most MAX_IN_FLIGHT at a time. A failure
+      // is a warning about that ticker only and never stops the others. Results keep the order of the request.
+      const outcomes = new Array<{ quote?: FetchedQuote; warning?: string }>(valid.length);
+      let next = 0;
+      const worker = async (): Promise<void> => {
+        while (next < valid.length) {
+          const i = next++;
+          outcomes[i] = await fetchOne(valid[i]!);
         }
-        seen.add(symbol);
-        quotes.push({ ticker: symbol, date: dayOfTime(item.regularMarketTime) ?? today(), close: price });
+      };
+      await Promise.all(Array.from({ length: Math.min(MAX_IN_FLIGHT, valid.length) }, worker));
+      const quotes: FetchedQuote[] = [];
+      for (const o of outcomes) {
+        if (o?.quote) quotes.push(o.quote);
+        if (o?.warning) warnings.push(o.warning);
       }
-      for (const t of valid) if (!seen.has(t)) warnings.push(`No quote returned for ${t}`);
       return { quotes, warnings };
     },
   };

@@ -41,7 +41,7 @@ beforeEach(() => {
 });
 
 describe('runInvestmentRefresh', () => {
-  it('asks the quotes of the open stock positions in ONE call, each ticker once', async () => {
+  it('asks the quotes of the open stock positions with a single fetchQuotes call, each ticker once', async () => {
     await run();
     expect(brapi.fetchQuotes).toHaveBeenCalledTimes(1);
     expect(brapi.fetchQuotes.mock.calls[0]![0].sort()).toEqual(['ABCD3', 'TEST11']);

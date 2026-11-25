@@ -1,7 +1,7 @@
 /**
  * Daily routine of the investments (P21 L2). Run once a day, after the market close (the run of the day stores the close it
  * finds, and a later run of the same day only replaces it):
- *   1. closes of the tickers with an open position (brapi, one call; needs BRAPI_TOKEN in the environment);
+ *   1. closes of the tickers with an open position (brapi, one request per ticker; needs BRAPI_TOKEN in the environment);
  *   2. CDI / Selic / IPCA since the last stored day (Banco Central, no key);
  *   3. the snapshot of each investment account that holds positions, into account_valuations.
  *
