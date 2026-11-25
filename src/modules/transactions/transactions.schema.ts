@@ -232,7 +232,7 @@ export const payInvoiceSchema = z.object({
   householdId: z.string().uuid().optional(), // Optional - will use personal household if not provided
   sourceAccountId: z.string().uuid(), // Conta bancária que vai pagar
   amount: z.coerce.number().positive().optional(), // Valor a pagar (opcional, se não fornecido usa o total da fatura)
-  month: z.string().regex(/^\d{4}-\d{2}$/, 'Month must be in format YYYY-MM'), // "YYYY-MM"
+  month: z.string().regex(COMPETENCE_MONTH_RE, 'Month must be in format YYYY-MM'), // "YYYY-MM"
   description: z.string().max(255).optional(),
   paymentDate: localDateSchema.optional(), // Data do lançamento de pagamento (default: hoje). Usado por importações de meses fechados.
 });
@@ -244,7 +244,7 @@ export type PayInvoiceInput = z.infer<typeof payInvoiceSchema>;
  */
 export const creditCardInvoiceParamsSchema = z.object({
   accountId: z.string().uuid(),
-  month: z.string().regex(/^\d{4}-\d{2}$/, 'Month must be in format YYYY-MM'),
+  month: z.string().regex(COMPETENCE_MONTH_RE, 'Month must be in format YYYY-MM'),
 });
 
 export type CreditCardInvoiceParams = z.infer<typeof creditCardInvoiceParamsSchema>;

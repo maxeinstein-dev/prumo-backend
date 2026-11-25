@@ -44,7 +44,7 @@ function monthOfOrdinal(ordinal: number): string {
 /** Ordinal (year * 12 + zero-based month) of a calendar `YYYY-MM`. */
 function ordinalOfMonth(month: string): number | null {
   const match = /^(\d{4})-(\d{2})$/.exec(month);
-  return match ? Number(match[1]) * 12 + Number(match[2]) - 1 : null;
+  return match && Number(match[2]) >= 1 && Number(match[2]) <= 12 ? Number(match[1]) * 12 + Number(match[2]) - 1 : null;
 }
 
 /** The text marker of the payment of `accountId` for the calendar invoice month `YYYY-MM`. */
