@@ -2,6 +2,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../db/prisma.js';
 import { BadRequestError } from '../errors/index.js';
 import { AccountType, TransactionType } from '../enums/index.js';
+import { withoutPaymentMarkerWhere } from '../../modules/transactions/invoice-payment-link.js';
 
 /**
  * Balance Service - Centralized service for managing account balances
@@ -395,7 +396,7 @@ export async function recalculateCreditCardLimit(
       householdId: creditCard.householdId,
       paid: false,
       type: { in: [TransactionType.INCOME, TransactionType.EXPENSE] }, // Only INCOME/EXPENSE, exclude TRANSFER/ALLOCATION
-      attachmentUrl: null, // Exclude payment transactions (they have attachmentUrl)
+      ...withoutPaymentMarkerWhere(), // Exclude payment transactions (they carry the payment link)
     },
     select: {
       type: true,

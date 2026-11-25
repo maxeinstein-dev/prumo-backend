@@ -1,6 +1,6 @@
 import { prisma } from '../../shared/db/prisma.js';
 import { AccountType, TransactionType } from '../../shared/enums/index.js';
-import { INVOICE_PAYMENT_PREFIX } from '../budgets/budget-spending.js';
+import { invoicePaymentCardId, invoicePaymentOfCardWhere, isInvoicePayment, withoutPaymentMarkerWhere } from '../transactions/invoice-payment-link.js';
 import { dayString } from '../recurring-transactions/recurring-dates.js';
 import { buildFgtsForecast } from '../payroll/payroll-events.js';
 import { employmentInclude, toEmploymentData } from '../payroll/payroll.links.js';
@@ -46,6 +46,7 @@ interface Row {
   fromAccountId: string | null;
   toAccountId: string | null;
   attachmentUrl: string | null;
+  invoicePaymentAccountId?: string | null;
   notes: string | null;
   categoryName: string | null;
 }
@@ -102,7 +103,7 @@ export async function loadNetWorth(params: NetWorthParams): Promise<NetWorthResp
           type: { in: [TransactionType.INCOME, TransactionType.EXPENSE, TransactionType.TRANSFER] },
           OR: [{ accountId: { in: balanceIds } }, { fromAccountId: { in: balanceIds } }, { toAccountId: { in: balanceIds } }],
         },
-        select: { type: true, isRefund: true, amount: true, date: true, accountId: true, fromAccountId: true, toAccountId: true, attachmentUrl: true, notes: true, categoryName: true },
+        select: { type: true, isRefund: true, amount: true, date: true, accountId: true, fromAccountId: true, toAccountId: true, attachmentUrl: true, invoicePaymentAccountId: true, notes: true, categoryName: true },
       })
     : [];
   const effectsOf = (id: string): Effect[] => {
@@ -126,14 +127,14 @@ export async function loadNetWorth(params: NetWorthParams): Promise<NetWorthResp
   // Cards: the same sums the invoice uses for what it carries (net purchases without the tagged rows, minus the tagged payments).
   const cardRows = cardIds.length
     ? await prisma.transaction.findMany({
-        where: { householdId, accountId: { in: cardIds }, attachmentUrl: null, categoryName: { not: null } },
+        where: { householdId, accountId: { in: cardIds }, ...withoutPaymentMarkerWhere(), categoryName: { not: null } },
         select: { type: true, amount: true, date: true, accountId: true },
       })
     : [];
   const paymentRows = cardIds.length
     ? await prisma.transaction.findMany({
-        where: { householdId, OR: cardIds.map((id) => ({ attachmentUrl: { startsWith: `${INVOICE_PAYMENT_PREFIX}${id}:` } })) },
-        select: { amount: true, date: true, attachmentUrl: true },
+        where: { householdId, OR: cardIds.map((id) => invoicePaymentOfCardWhere(id)) },
+        select: { amount: true, date: true, attachmentUrl: true, invoicePaymentAccountId: true },
       })
     : [];
   const cardInputs: CardInput[] = cards.map((c) => ({
@@ -144,7 +145,7 @@ export async function loadNetWorth(params: NetWorthParams): Promise<NetWorthResp
       .filter((r) => r.accountId === c.id)
       .map((r) => ({ date: dayString(r.date), cents: r.type === TransactionType.INCOME ? -cents(r.amount) : cents(r.amount) })),
     payments: paymentRows
-      .filter((r) => r.attachmentUrl?.startsWith(`${INVOICE_PAYMENT_PREFIX}${c.id}:`))
+      .filter((r) => invoicePaymentCardId(r) === c.id)
       .map((r) => ({ date: dayString(r.date), cents: cents(r.amount) })),
   }));
 
@@ -175,7 +176,7 @@ export async function loadNetWorth(params: NetWorthParams): Promise<NetWorthResp
       date: { gte: windowStart, lte: windowEnd },
       type: { in: [TransactionType.INCOME, TransactionType.EXPENSE, TransactionType.TRANSFER] },
     },
-    select: { type: true, isRefund: true, amount: true, date: true, accountId: true, fromAccountId: true, toAccountId: true, attachmentUrl: true, notes: true, categoryName: true },
+    select: { type: true, isRefund: true, amount: true, date: true, accountId: true, fromAccountId: true, toAccountId: true, attachmentUrl: true, invoicePaymentAccountId: true, notes: true, categoryName: true },
   });
   const investIds = new Set(invest.map((a) => a.id));
   for (const r of flowRows) {
@@ -187,7 +188,7 @@ export async function loadNetWorth(params: NetWorthParams): Promise<NetWorthResp
       }
       continue;
     }
-    if (r.attachmentUrl?.startsWith(INVOICE_PAYMENT_PREFIX)) continue; // the purchases already count on their own dates
+    if (isInvoicePayment(r)) continue; // the purchases already count on their own dates
     if (r.notes?.startsWith(ADJUSTMENT_NOTE_PREFIX)) continue; // a balance adjustment is not income or expense
     // A refund is not income: it takes its amount off the expense (budget-spending.ts), so the saving rate does not rise
     if (r.type === TransactionType.INCOME && r.isRefund) flowOf(month).expenseCents -= cents(r.amount);

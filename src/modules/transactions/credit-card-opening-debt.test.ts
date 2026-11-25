@@ -16,6 +16,17 @@ const refund = (n: number) => ({
 });
 
 describe('openingDebtFromMovements', () => {
+  it.each([
+    ['legacy text only', { attachmentUrl: `invoice_pay:${card}:2026-9`, invoicePaymentAccountId: null }],
+    ['columns and text', { attachmentUrl: `invoice_pay:${card}:2026-9`, invoicePaymentAccountId: card, invoicePaymentMonth: '2026-10' }],
+    ['columns only', { attachmentUrl: null, invoicePaymentAccountId: card, invoicePaymentMonth: '2026-10' }],
+  ])('takes a payment off the debt the same way in every shape of the link (%s)', (_name, link) => {
+    const paid = { ...payment(0.2), ...link };
+    expect(openingDebtFromMovements(dec(10), [expense(0.1), expense(0.2), refund(0.1), paid], card)).toBe(10);
+    // a payment of another card is not a movement of this one
+    expect(openingDebtFromMovements(dec(10), [{ ...paid, invoicePaymentAccountId: link.invoicePaymentAccountId ? 'card-2' : null, attachmentUrl: 'invoice_pay:card-2:2026-9' }], card)).toBe(10);
+  });
+
   it('is exact to the cent where float sums drift (0.6 - (0.1 + 0.2 + 0.1))', () => {
     expect(openingDebtFromMovements(dec(0.6), [expense(0.1), expense(0.2), expense(0.1)], card)).toBe(0.2);
   });

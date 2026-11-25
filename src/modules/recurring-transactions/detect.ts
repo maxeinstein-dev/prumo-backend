@@ -5,6 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { normalizeLabel } from '../transactions/maxfin-import.helpers.js';
+import { isInvoicePayment } from '../transactions/invoice-payment-link.js';
 
 export const DEFAULT_MIN_MONTHS = 3;
 export const DEFAULT_WINDOW_MONTHS = 12;
@@ -40,6 +41,7 @@ export interface DetectTransaction {
   installmentNumber?: number | null;
   totalInstallments?: number | null;
   attachmentUrl?: string | null;
+  invoicePaymentAccountId?: string | null;
   recurringTransactionId?: string | null;
 }
 
@@ -149,7 +151,7 @@ function isEligibleKind(tx: DetectTransaction): boolean {
     tx.type === 'EXPENSE' &&
     !!tx.accountId &&
     tx.amount > 0 &&
-    !(tx.attachmentUrl ?? '').startsWith('invoice_pay:') &&
+    !isInvoicePayment(tx) &&
     !(tx.sourceRef && FUTURE_DRAFT_REF.test(tx.sourceRef))
   );
 }

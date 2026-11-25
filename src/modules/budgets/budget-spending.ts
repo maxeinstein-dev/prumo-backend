@@ -1,6 +1,7 @@
 import type { Prisma } from '../../generated/prisma/client.js';
 import { CategoryType, GENERAL_BUDGET_CATEGORY } from '../../shared/enums/index.js';
 import { deductionCents, type TheirShare } from '../people/own-share.js';
+import { notInvoicePaymentWhere } from '../transactions/invoice-payment-link.js';
 
 /**
  * The ONE definition of "what counts as the realized amount of a budget", shared by the budget summary (what the
@@ -14,11 +15,10 @@ import { deductionCents, type TheirShare } from '../people/own-share.js';
  * dashboard as a negative expense of its own category, and a category may be negative in a month (the refund of a
  * purchase of an earlier month). An income budget never takes a refund.
  *
- * The payment of a card invoice (tagged `invoice_pay:<card>:...` in `attachmentUrl`) is left out: the purchases of the
+ * The payment of a card invoice (see invoice-payment-link.ts) is left out: the purchases of the
  * card already count on their own dates, so the payment would count the same money twice.
  */
-export const INVOICE_PAYMENT_PREFIX = 'invoice_pay:';
-export const NOT_INVOICE_PAYMENT = { OR: [{ attachmentUrl: null }, { NOT: { attachmentUrl: { startsWith: INVOICE_PAYMENT_PREFIX } } }] };
+export const NOT_INVOICE_PAYMENT = notInvoicePaymentWhere();
 
 export function budgetSpendingWhere(
   budget: { householdId: string | undefined; categoryName: string; type: string },

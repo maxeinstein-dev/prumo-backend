@@ -19,9 +19,11 @@ const store = vi.hoisted(() => ({ rows: [] as unknown[] }));
 const updates = vi.hoisted(() => ({ updateMany: vi.fn(), create: vi.fn(), accountUpdate: vi.fn(), deleted: vi.fn() }));
 
 function matches(row: Row, where: Record<string, any>): boolean {
-  if (where.OR) return (where.OR as Record<string, any>[]).some((w) => matches(row, w));
+  // OR is one more condition next to the sibling keys, and a missing field reads as null (as the columns do in the database)
+  if (where.OR && !(where.OR as Record<string, any>[]).some((w) => matches(row, w))) return false;
   for (const [key, cond] of Object.entries(where)) {
-    const value = (row as any)[key];
+    if (key === 'OR') continue;
+    const value = (row as any)[key] ?? null;
     if (key === 'date') {
       const t = row.date.getTime();
       if (cond.gte && t < cond.gte.getTime()) return false;
@@ -157,6 +159,20 @@ describe('calculateCreditCardInvoice payments by invoice tag', () => {
   const seedSepAndOct = () => {
     store.rows = [purchase('2026-08-20', 4793.57), purchase('2026-09-15', 5384.98)];
   };
+
+  it.each([
+    ['legacy text only', { attachmentUrl: 'invoice_pay:card-1:2026-8' }],
+    ['columns and text', { attachmentUrl: 'invoice_pay:card-1:2026-8', invoicePaymentAccountId: 'card-1', invoicePaymentMonth: '2026-09' }],
+    ['columns only', { attachmentUrl: null, invoicePaymentAccountId: 'card-1', invoicePaymentMonth: '2026-09' }],
+  ])('gives the same invoice numbers for every shape of the payment link (%s)', async (_name, link) => {
+    seedSepAndOct();
+    store.rows.push({ ...payment('2026-09-02', 4793.57, '2026-09'), ...link });
+
+    const oct = await invoice('2026-10');
+    expect(oct.previousBalance).toBeCloseTo(0, 2);
+    expect(oct.currentExpenses).toBeCloseTo(5384.98, 2);
+    expect(oct.total).toBeCloseTo(5384.98, 2);
+  });
 
   it('subtracts a payment dated after the closing day of its own invoice from the next previousBalance', async () => {
     seedSepAndOct();

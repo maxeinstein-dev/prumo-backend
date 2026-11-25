@@ -16,7 +16,16 @@ import { effectiveClosingDay } from '../accounts/closing-day.js';
 import { executeRecurringTransaction } from '../recurring-transactions/recurring-transactions.service.js';
 import { dayString } from '../recurring-transactions/recurring-dates.js';
 import { openingDebtFromMovements } from './credit-card-opening-debt.js';
-import { invoicePaymentColumnsFromTag, invoicePaymentWrite } from './invoice-payment-link.js';
+import {
+  invoicePaymentColumnsFromTag,
+  invoicePaymentCardId,
+  invoicePaymentOfCardWhere,
+  invoicePaymentOfInvoiceWhere,
+  invoicePaymentOrdinal,
+  invoicePaymentLink,
+  invoicePaymentWrite,
+  withoutPaymentMarkerWhere,
+} from './invoice-payment-link.js';
 import { fromCents, invoiceDates, invoiceState, loadInvoiceForecast, toCents } from './credit-card-invoice-forecast.js';
 import { applyTransfer, applyAllocation, applyDeallocation, recalculateCreditCardLimit, updateBalanceForNormalTransaction } from '../../shared/services/balance.service.js';
 import type {
@@ -1929,15 +1938,11 @@ export function invoiceOrdinal(year: number, monthNum: number): number {
 }
 
 /**
- * Invoice ordinal of a payment tagged `invoice_pay:<cardId>:<YYYY>-<zero-based month>`; null when the transaction is
- * not a payment of this card or its tag cannot be read.
+ * Invoice ordinal (year * 12 + zero-based month) of the legacy payment text of this card; null when it is not a payment
+ * of this card or the text cannot be read. Rows are read through invoicePaymentOrdinal, which also reads the columns.
  */
 export function parseInvoicePaymentOrdinal(attachmentUrl: string | null | undefined, accountId: string): number | null {
-  const prefix = `invoice_pay:${accountId}:`;
-  if (!attachmentUrl?.startsWith(prefix)) return null;
-  const match = /^(\d{4})-(\d{1,2})$/.exec(attachmentUrl.slice(prefix.length));
-  if (!match) return null;
-  return Number(match[1]) * 12 + Number(match[2]);
+  return invoicePaymentOrdinal({ attachmentUrl }, accountId);
 }
 
 /**
@@ -1955,7 +1960,7 @@ export async function loadInvoicePayments(
   const rows = await client.transaction.findMany({
     where: {
       householdId,
-      attachmentUrl: { startsWith: `invoice_pay:${accountId}:` },
+      ...invoicePaymentOfCardWhere(accountId),
       date: { lte: today },
     },
   });
@@ -1963,7 +1968,7 @@ export async function loadInvoicePayments(
   const previous: typeof rows = [];
   const currentRows: typeof rows = [];
   for (const row of rows) {
-    const ordinal = parseInvoicePaymentOrdinal(row.attachmentUrl, accountId);
+    const ordinal = invoicePaymentOrdinal(row, accountId);
     if (ordinal === null) continue;
     if (ordinal < current) previous.push(row);
     else if (ordinal === current) currentRows.push(row);
@@ -2057,7 +2062,7 @@ export async function calculateCreditCardInvoice(
       accountId,
       householdId,
       date: { lt: invoiceStart },
-      attachmentUrl: { equals: null }, // Exclude payment transactions
+      ...withoutPaymentMarkerWhere(), // Exclude payment transactions
     },
   });
 
@@ -2094,7 +2099,7 @@ export async function calculateCreditCardInvoice(
       where: {
         OR: [
           { accountId, householdId, date: { gte: invoiceStart, lte: invoiceEnd } },
-          { householdId, attachmentUrl: { startsWith: `invoice_pay:${accountId}:` }, date: { gte: invoiceStart, lte: invoiceEnd } },
+          { householdId, ...invoicePaymentOfCardWhere(accountId), date: { gte: invoiceStart, lte: invoiceEnd } },
         ],
       },
     });
@@ -2102,7 +2107,7 @@ export async function calculateCreditCardInvoice(
       where: {
         OR: [
           { accountId, householdId, date: { gt: invoiceEnd } },
-          { householdId, attachmentUrl: { startsWith: `invoice_pay:${accountId}:` }, date: { gt: invoiceEnd } },
+          { householdId, ...invoicePaymentOfCardWhere(accountId), date: { gt: invoiceEnd } },
         ],
       },
     });
@@ -2125,7 +2130,7 @@ export async function calculateCreditCardInvoice(
       accountId,
       householdId,
       date: { gte: invoiceStart, lte: invoiceEnd },
-      attachmentUrl: { equals: null }, // Exclude payment transactions
+      ...withoutPaymentMarkerWhere(), // Exclude payment transactions
     },
   });
 
@@ -2145,8 +2150,7 @@ export async function calculateCreditCardInvoice(
 
   // Get payment transactions for this invoice period
   // monthKey format: "YYYY-M" where M is 0-indexed (0-11)
-  const monthKey = `${year}-${monthNum - 1}`;
-  const technicalIdentifier = `invoice_pay:${accountId}:${monthKey}`;
+  const invoiceMonth = `${String(year).padStart(4, '0')}-${String(monthNum).padStart(2, '0')}`;
   
   const currentPayments = payments.currentRows;
   const currentPaymentsTotal = payments.currentTotal;
@@ -2165,7 +2169,7 @@ export async function calculateCreditCardInvoice(
       },
       {
         householdId,
-        attachmentUrl: technicalIdentifier,
+        ...invoicePaymentOfInvoiceWhere(accountId, invoiceMonth),
       },
     ],
   };
@@ -2315,7 +2319,7 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         accountId,
         householdId: householdId!,
         date: { lt: invoiceMonthStart },
-        attachmentUrl: { equals: null },
+        ...withoutPaymentMarkerWhere(),
       },
     });
 
@@ -2355,7 +2359,7 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         where: {
           OR: [
             { accountId, householdId: householdId!, date: { gte: invoiceMonthStart, lte: invoiceMonthEnd } },
-            { householdId: householdId!, attachmentUrl: { startsWith: `invoice_pay:${accountId}:` }, date: { gte: invoiceMonthStart, lte: invoiceMonthEnd } },
+            { householdId: householdId!, ...invoicePaymentOfCardWhere(accountId), date: { gte: invoiceMonthStart, lte: invoiceMonthEnd } },
           ],
         },
       });
@@ -2377,7 +2381,7 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         accountId,
         householdId: householdId!,
         date: { gte: invoiceMonthStart, lte: invoiceMonthEnd },
-        attachmentUrl: { equals: null },
+        ...withoutPaymentMarkerWhere(),
       },
     });
 
@@ -2432,8 +2436,8 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
     });
 
     // Structured log so the payment's technical identifier can be compared against
-    // the frontend invoice filter (CreditCards.tsx builds the same
-    // `invoice_pay:${cardId}:${year}-${zeroBasedMonth}` string). If the frontend
+    // the frontend invoice filter (CreditCards.tsx builds the same legacy text, see
+    // invoice-payment-link.ts). If the frontend
     // does not surface this payment, compare `technicalIdentifier` and `paymentDate`
     // below with the month bucket being viewed: a payment is stored with today's date,
     // so paying an invoice in a later month lands it outside that month's bucket.
@@ -2486,7 +2490,7 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
         householdId: householdId!,
         date: { gte: invoiceMonthStart, lte: invoiceMonthEnd },
         paid: false,
-        attachmentUrl: { equals: null }, // Only purchases, not payments
+        ...withoutPaymentMarkerWhere(), // Only purchases, not payments
       },
       data: {
         paid: true,
@@ -2526,7 +2530,7 @@ export async function undoCreditCardPayment(
       where: {
         id: input.transactionId,
         householdId,
-        attachmentUrl: { not: null },
+        OR: [{ attachmentUrl: { not: null } }, { invoicePaymentAccountId: { not: null } }],
       },
     });
 
@@ -2534,7 +2538,7 @@ export async function undoCreditCardPayment(
       throw new NotFoundError('Payment transaction');
     }
 
-    if (!paymentTransaction.attachmentUrl?.startsWith(`invoice_pay:${input.accountId}:`)) {
+    if (invoicePaymentCardId(paymentTransaction) !== input.accountId) {
       throw new BadRequestError('Transaction is not a payment for this credit card');
     }
 
@@ -2551,17 +2555,13 @@ export async function undoCreditCardPayment(
       throw new BadRequestError('Account is not a credit card');
     }
 
-    // 3. Extract month from attachmentUrl
-    // Format: invoice_pay:accountId:YYYY-M (where M is 0-indexed, 0-11)
-    const monthMatch = paymentTransaction.attachmentUrl.match(/invoice_pay:[^:]+:(\d{4}-\d+)/);
-    if (!monthMatch) {
+    // 3. Invoice month the payment belongs to (columns, or the legacy text of an older payment)
+    const paymentLink = invoicePaymentLink(paymentTransaction);
+    if (!paymentLink) {
       throw new BadRequestError('Invalid payment transaction format');
     }
 
-    const monthKey = monthMatch[1];
-    const [year, monthIndex] = monthKey.split('-').map(Number);
-    // monthIndex is 0-indexed (0-11), convert to 1-indexed for Date constructor
-    const monthNum = monthIndex + 1;
+    const [year, monthNum] = paymentLink.month.split('-').map(Number);
     
     const undoWindow = creditCardInvoiceWindow(year, monthNum, effectiveClosingDay(creditCard));
     const monthStart = undoWindow.start;
@@ -2606,7 +2606,7 @@ export async function undoCreditCardPayment(
           lte: paymentTransaction.date < monthEnd ? paymentTransaction.date : monthEnd,
         },
         paid: true,
-        attachmentUrl: { equals: null }, // Only purchases, not payments
+        ...withoutPaymentMarkerWhere(), // Only purchases, not payments
       },
       data: {
         paid: false,

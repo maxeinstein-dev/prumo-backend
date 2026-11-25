@@ -76,6 +76,7 @@ async function runDetection(
       installmentNumber: true,
       totalInstallments: true,
       attachmentUrl: true,
+      invoicePaymentAccountId: true,
       recurringTransactionId: true,
     },
   });
@@ -97,6 +98,7 @@ async function runDetection(
       installmentNumber: r.installmentNumber,
       totalInstallments: r.totalInstallments,
       attachmentUrl: r.attachmentUrl,
+      invoicePaymentAccountId: r.invoicePaymentAccountId,
       recurringTransactionId: r.recurringTransactionId,
     });
   }

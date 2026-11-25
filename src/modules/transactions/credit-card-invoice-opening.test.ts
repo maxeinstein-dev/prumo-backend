@@ -19,9 +19,11 @@ const store = vi.hoisted(() => ({ rows: [] as unknown[] }));
 const updates = vi.hoisted(() => ({ updateMany: vi.fn(), create: vi.fn(), accountUpdate: vi.fn(), deleted: vi.fn() }));
 
 function matches(row: Row, where: Record<string, any>): boolean {
-  if (where.OR) return (where.OR as Record<string, any>[]).some((w) => matches(row, w));
+  // OR is one more condition next to the sibling keys, and a missing field reads as null (as the columns do in the database)
+  if (where.OR && !(where.OR as Record<string, any>[]).some((w) => matches(row, w))) return false;
   for (const [key, cond] of Object.entries(where)) {
-    const value = (row as any)[key];
+    if (key === 'OR') continue;
+    const value = (row as any)[key] ?? null;
     if (key === 'date') {
       const t = row.date.getTime();
       if (cond.gte && t < cond.gte.getTime()) return false;

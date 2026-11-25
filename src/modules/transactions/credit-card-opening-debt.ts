@@ -1,5 +1,6 @@
 import { CategoryName, CategoryType, TransactionType, getCategoriesByType } from '../../shared/enums/index.js';
 import { fromCents, toCents } from './credit-card-invoice-forecast.js';
+import { invoicePaymentCardId } from './invoice-payment-link.js';
 
 interface Movement {
   accountId: string | null;
@@ -7,6 +8,7 @@ interface Movement {
   type: string | null;
   categoryName: string | null;
   attachmentUrl: string | null;
+  invoicePaymentAccountId?: string | null;
 }
 
 /**
@@ -18,7 +20,7 @@ export function openingDebtFromMovements(balance: { toNumber(): number }, moveme
   let netChangeCents = 0;
   for (const t of movements) {
     const cents = toCents(t.amount.toNumber());
-    if (t.attachmentUrl?.startsWith(`invoice_pay:${cardId}:`)) {
+    if (invoicePaymentCardId(t) === cardId) {
       netChangeCents -= cents; // Payment decreases debt
     } else if (t.accountId === cardId && t.categoryName) {
       const isIncome =

@@ -47,7 +47,7 @@ export const createTransactionSchema = z.object({
   installmentId: z.string().optional(),
   installmentNumber: z.number().int().positive().optional(),
   totalInstallments: z.number().int().positive().optional(),
-  attachmentUrl: z.string().max(500).optional(), // Pode ser URL ou identificador técnico (ex: invoice_pay:xxx:xxx)
+  attachmentUrl: z.string().max(500).optional(), // Pode ser URL ou identificador técnico do pagamento de fatura (ver invoice-payment-link.ts)
   sourceRef: z.string().max(120).optional(), // Identificador de origem de importação (dedup exata / reimportação idempotente)
   competenceMonth: competenceMonthSchema.nullish(), // Mês de referência (INCOME/EXPENSE); null/omitido = mês da data
   isRefund: z.boolean().optional(), // Estorno: receita que cancela uma despesa (só INCOME); não conta como receita
@@ -132,7 +132,7 @@ export const updateTransactionSchema = z.object({
   installmentId: z.string().nullable().optional(),
   installmentNumber: z.number().int().positive().nullable().optional(),
   totalInstallments: z.number().int().positive().nullable().optional(),
-  attachmentUrl: z.string().max(500).nullable().optional(), // Pode ser URL ou identificador técnico (ex: invoice_pay:xxx:xxx)
+  attachmentUrl: z.string().max(500).nullable().optional(), // Pode ser URL ou identificador técnico do pagamento de fatura (ver invoice-payment-link.ts)
   competenceMonth: competenceMonthSchema.nullable().optional(), // Mês de referência; null limpa (volta ao mês da data)
   isRefund: z.boolean().optional(), // Estorno (só INCOME)
 });

@@ -30,7 +30,7 @@ import {
   coveredInstallmentNumbers,
   invoiceNetAmount,
   invoicePaymentDate,
-  invoiceTechnicalId,
+  invoicePaymentWhere,
   isClosedMonth,
   isFutureDraftRef,
   isMaxFinRefundRow,
@@ -728,7 +728,7 @@ export async function previewFromGrid(params: PreviewFromGridParams): Promise<Ma
     }
     // The payment of a month is recorded once: say so in the preview instead of promising a second one.
     const alreadyPaid = !!(await prisma.transaction.findFirst({
-      where: { householdId, attachmentUrl: invoiceTechnicalId(resolved.credit.id, month) },
+      where: { householdId, ...invoicePaymentWhere(resolved.credit.id, month) },
       select: { id: true },
     }));
     invoice = {
@@ -1473,9 +1473,8 @@ export async function confirmMaxFinImport(params: ConfirmParams): Promise<MaxFin
         `Pagamento de fatura não registrado: os créditos do cartão importados nesta confirmação cobrem as compras (saldo líquido ${amount.toFixed(2)}).`,
       );
     } else {
-      const technicalIdentifier = invoiceTechnicalId(resolved.credit.id, month);
       const already = await prisma.transaction.findFirst({
-        where: { householdId, attachmentUrl: technicalIdentifier },
+        where: { householdId, ...invoicePaymentWhere(resolved.credit.id, month) },
         select: { id: true },
       });
       if (already) {

@@ -3,6 +3,7 @@ import { BadRequestError, NotFoundError } from '../../shared/errors/index.js';
 import { addMonthKey } from '../transactions/credit-card-commitment.js';
 import { projectRecurrence, toCents, type ForecastRecurrence, type InvoiceState } from '../transactions/credit-card-invoice-forecast.js';
 import { calculateCreditCardInvoice, utcToday } from '../transactions/transactions.service.js';
+import { invoicePaymentCardId, invoicePaymentOfCardWhere, isInvoicePayment } from '../transactions/invoice-payment-link.js';
 import { dayString, localDate } from '../recurring-transactions/recurring-dates.js';
 import { earlyDiscountQuoteOf, forecastBatch, referenceMonthOf } from '../recurring-transactions/recurring-forecast.js';
 import { amountOnDay, earlyDiscountOf } from '../recurring-transactions/early-discount.js';
@@ -14,7 +15,6 @@ import { addDays, buildCashFlow, type CashFlowEventInput, type CashFlowProjectio
 
 /** Account types the projection is about: where the household's money sits. Cards and investments are left out. */
 const CASH_TYPES = ['CHECKING', 'SAVINGS', 'CASH'] as const;
-const INVOICE_PAYMENT_PREFIX = 'invoice_pay:';
 
 /** The part of `calculateCreditCardInvoice(...).data` the projection reads. */
 export interface InvoiceSnapshot {
@@ -195,7 +195,7 @@ async function pendingEvents(householdId: string, accountIds: string[], endUtc: 
   const events: CashFlowEventInput[] = [];
   for (const t of rows) {
     const date = dayString(t.date);
-    if (t.attachmentUrl?.startsWith(INVOICE_PAYMENT_PREFIX) && date > today) continue;
+    if (isInvoicePayment(t) && date > today) continue;
     const cents = toCents(t.amount.toNumber());
     events.push({
       date,
@@ -408,16 +408,17 @@ async function lastPayers(householdId: string, cardIds: string[], today: string)
   const rows = await prisma.transaction.findMany({
     where: {
       householdId,
-      OR: cardIds.map((id) => ({ attachmentUrl: { startsWith: `${INVOICE_PAYMENT_PREFIX}${id}:` } })),
+      OR: cardIds.map((id) => invoicePaymentOfCardWhere(id)),
       accountId: { not: null },
       date: { lte: todayDate },
     },
     orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
-    select: { accountId: true, attachmentUrl: true },
+    select: { accountId: true, attachmentUrl: true, invoicePaymentAccountId: true },
   });
   const result = new Map<string, string>();
   for (const row of rows) {
-    const cardId = cardIds.find((id) => row.attachmentUrl?.startsWith(`${INVOICE_PAYMENT_PREFIX}${id}:`));
+    const paidCard = invoicePaymentCardId(row);
+    const cardId = cardIds.find((id) => id === paidCard);
     if (cardId && !result.has(cardId)) result.set(cardId, row.accountId!);
   }
   return result;

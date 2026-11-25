@@ -127,7 +127,7 @@ describe('budget spending: the alert and the screen use one definition', () => {
 
   it('the General budget takes every category of its type; a category budget only its own', () => {
     const period = { AND: [] };
-    const notPayment = { OR: [{ attachmentUrl: null }, { NOT: { attachmentUrl: { startsWith: 'invoice_pay:' } } }] };
+    const notPayment = { invoicePaymentAccountId: null, OR: [{ attachmentUrl: null }, { NOT: { attachmentUrl: { startsWith: 'invoice_pay:' } } }] };
     // an expense budget takes expenses and refunds (income marked isRefund); an income budget takes income that is not a refund
     const expenseOrRefund = { OR: [{ type: 'EXPENSE' }, { type: 'INCOME', isRefund: true }] };
     const incomeNotRefund = [{ type: 'INCOME' }, { NOT: { isRefund: true } }];

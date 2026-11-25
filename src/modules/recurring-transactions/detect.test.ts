@@ -226,6 +226,16 @@ describe('detectRecurring: what stays out', () => {
     expect(result.candidates).toEqual([]);
   });
 
+  it.each([
+    ['legacy text only', { attachmentUrl: 'invoice_pay:acc-card:2026-1' }],
+    ['columns and text', { attachmentUrl: 'invoice_pay:acc-card:2026-1', invoicePaymentAccountId: 'acc-card', invoicePaymentMonth: '2026-02' }],
+    ['columns only', { attachmentUrl: null, invoicePaymentAccountId: 'acc-card', invoicePaymentMonth: '2026-02' }],
+  ])('leaves an invoice payment out of the candidates in every shape of the link (%s)', (_name, link) => {
+    expect(detect(series('Pagamento de fatura', ALL, 1500, link)).candidates).toEqual([]);
+    // The same series without the link is a candidate, so the exclusion is the link and nothing else
+    expect(detect(series('Pagamento de fatura', ALL, 1500)).candidates).not.toEqual([]);
+  });
+
   it('does not count an unpaid month as evidence, only as covered for the first run', () => {
     const paid = series('Streaming Alfa', [6, 7, 8, 9], 21.9);
     const pendingOctober = tx({ description: 'Streaming Alfa', date: '2026-10-01', amount: 21.9, paid: false });

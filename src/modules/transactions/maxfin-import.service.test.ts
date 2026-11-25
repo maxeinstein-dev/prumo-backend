@@ -1489,7 +1489,7 @@ describe('confirmMaxFinImport: invoice payment', () => {
     await confirm([january], { options: CLOSED_WITH_INVOICE, month: { year: 2026, month: 1 } });
 
     expect(db.transactionFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { householdId: HOUSEHOLD, attachmentUrl: 'invoice_pay:acc-credit:2026-0' } }),
+      expect.objectContaining({ where: { householdId: HOUSEHOLD, OR: [{ invoicePaymentAccountId: 'acc-credit', invoicePaymentMonth: '2026-01' }, { attachmentUrl: 'invoice_pay:acc-credit:2026-0' }] } }),
     );
     expect(db.payCreditCardInvoice).toHaveBeenCalledWith(
       expect.objectContaining({ month: '2026-01', paymentDate: new Date(2026, 0, 9) }),
@@ -1503,7 +1503,7 @@ describe('confirmMaxFinImport: invoice payment', () => {
 
     expect(db.transactionFindFirst).toHaveBeenCalledTimes(1);
     expect(db.transactionFindFirst).toHaveBeenCalledWith({
-      where: { householdId: HOUSEHOLD, attachmentUrl: 'invoice_pay:acc-credit:2026-2' },
+      where: { householdId: HOUSEHOLD, OR: [{ invoicePaymentAccountId: 'acc-credit', invoicePaymentMonth: '2026-03' }, { attachmentUrl: 'invoice_pay:acc-credit:2026-2' }] },
       select: { id: true },
     });
     expect(db.payCreditCardInvoice).not.toHaveBeenCalled();
@@ -2435,7 +2435,7 @@ describe('buildMaxFinPreview: invoice payment offer', () => {
     const preview = await previewSample({ options: { payInvoice: true } });
 
     expect(db.transactionFindFirst).toHaveBeenCalledWith({
-      where: { householdId: HOUSEHOLD, attachmentUrl: 'invoice_pay:acc-credit:2026-2' },
+      where: { householdId: HOUSEHOLD, OR: [{ invoicePaymentAccountId: 'acc-credit', invoicePaymentMonth: '2026-03' }, { attachmentUrl: 'invoice_pay:acc-credit:2026-2' }] },
       select: { id: true },
     });
     expect(preview.invoice).toMatchObject({ alreadyPaid: true, willPay: false, amount: 1916.5 });
