@@ -7,6 +7,7 @@ const db = vi.hoisted(() => ({
   category: { findMany: vi.fn() },
   employment: { findMany: vi.fn() },
   savingsGoal: { findMany: vi.fn() },
+  investmentPosition: { findMany: vi.fn() },
   savingsGoalContribution: { findMany: vi.fn() },
 }));
 vi.mock('../../shared/db/prisma.js', () => ({ prisma: db }));
@@ -42,7 +43,8 @@ const goal = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-function setup(s: { accounts?: unknown[]; goals?: unknown[]; done?: unknown[] } = {}) {
+function setup(s: { accounts?: unknown[]; goals?: unknown[]; done?: unknown[]; withPositions?: string[] } = {}) {
+  db.investmentPosition.findMany.mockResolvedValue((s.withPositions ?? []).map((id) => ({ savingsGoalId: id })));
   db.account.findMany.mockResolvedValue(s.accounts ?? [account(CHK)]);
   db.recurringTransaction.findMany.mockResolvedValue([]);
   db.category.findMany.mockResolvedValue([]);
@@ -89,6 +91,23 @@ describe('cash flow: reserves', () => {
     // and the planned contribution lowers the free balance on its day
     const nov15 = out.days.find((d) => d.date === '2026-11-15')!;
     expect(nov15.endBalance).toBe(1249.5);
+  });
+
+  it('a goal worth its investment positions marks nothing in the balance and plans no contribution (P21 L4)', async () => {
+    setup({ goals: [goal(), goal({ id: 'g2', name: 'Trip', currentAmount: dec(400) })], withPositions: ['g2'] });
+    const out = await run();
+    // only g1 keeps money inside the account; g2 lives in positions
+    expect(out.allocated).toBe(1000);
+    expect(out.startingBalance).toBe(2000);
+    expect(events(out).filter((e) => e.source === 'reserve').every((e) => e.sourceId === 'g1')).toBe(true);
+    expect(db.investmentPosition.findMany.mock.calls[0]![0].where).toMatchObject({ savingsGoalId: { in: ['g1', 'g2'] }, closedAt: null });
+  });
+
+  it('a goal with positions and a monthly plan produces no reserve event at all', async () => {
+    setup({ goals: [goal()], withPositions: ['g1'] });
+    const out = await run();
+    expect(events(out)).toEqual([]);
+    expect(out.allocated).toBe(0);
   });
 
   it('a month already contributed to is not planned again', async () => {

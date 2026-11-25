@@ -11,6 +11,7 @@ import { benefitEvents, benefitPaidInMonth, extraPayrollEvents, salaryPaidInMont
 import { loadPayrollLinks, type PayrollLink } from '../payroll/payroll.links.js';
 import { allocatedCentsByAccount, plannedContributions } from '../savings-goals/savings-goals.planning.js';
 import { planGoalOf, type GoalRow } from '../savings-goals/savings-goals.contributions.js';
+import { goalIdsWithOpenPositions } from '../investments/investments.goals.js';
 import { addDays, buildCashFlow, type CashFlowEventInput, type CashFlowProjection, type UnassignedInvoiceInput } from './cash-flow.js';
 
 /** Account types the projection is about: where the household's money sits. Cards and investments are left out. */
@@ -130,10 +131,11 @@ export async function loadCashFlow(params: CashFlowParams): Promise<CashFlowProj
 
   // Savings goals kept inside these accounts: the projection runs on the FREE balance (what the account holds minus what
   // the goals keep), and each goal's planned contribution not yet made this month leaves it on its day.
-  const goals =
-    scope.length > 0
-      ? (await prisma.savingsGoal.findMany({ where: { householdId, accountId: { in: [...scopeIds] } } })).map((g) => planGoalOf(g as unknown as GoalRow))
-      : [];
+  // A goal worth its investment positions (P21 L4) keeps nothing inside these accounts and takes no manual contribution:
+  // it neither lowers the free balance nor plans a contribution.
+  const goalRows = scope.length > 0 ? await prisma.savingsGoal.findMany({ where: { householdId, accountId: { in: [...scopeIds] } } }) : [];
+  const withPositions = await goalIdsWithOpenPositions(goalRows.map((g) => g.id));
+  const goals = goalRows.filter((g) => !withPositions.has(g.id)).map((g) => planGoalOf(g as unknown as GoalRow));
   const allocatedCents = [...allocatedCentsByAccount(goals).values()].reduce((sum, c) => sum + c, 0);
   const startingBalanceCents = totalBalanceCents - allocatedCents;
 
