@@ -160,4 +160,53 @@ describe('card OFX import: purchases confirmed from a capture in installments (P
     expect(preview.proposals.filter((p) => p.kind === 'create')).toHaveLength(1);
     expect(fakeServices.createTransaction).not.toHaveBeenCalled();
   });
+
+  it('installment 1 charged 1 cent below the stored one (33,33 vs 33,34) still pairs: the row takes the bank value and no future is generated', async () => {
+    const [first, second] = seedCapturedPlan();
+    const buffer = SEPTEMBER_STATEMENT([{ fitid: 'fit-x', date: '20260915', amount: '-33.33', memo: 'Loja Exemplo - Parcela 1/3' }]);
+
+    const preview = await buildCardOfxPreview({ account: card, buffer });
+
+    expect(preview.proposals.map((p) => p.kind)).toEqual(['enrich-near']);
+    expect(preview.proposals[0]).toMatchObject({ defaultSelected: true });
+    expect(preview.proposals[0]!.target).toMatchObject({ transactionId: first!.id, sourceRef: PLAN });
+
+    const result = await confirmCardOfxImport({ request: confirmRequest(preview), account: card, userId: 'user-1' });
+
+    expect(result).toMatchObject({ enriched: 1, created: 0, skipped: 0 });
+    expect(result.futureInstallments ?? 0).toBe(0);
+    expect(onCard()).toHaveLength(3);
+    expect(tx(first!.id)).toMatchObject({ sourceRef: PLAN, installmentId: PLAN, installmentNumber: 1, totalInstallments: 3, amount: 33.33, description: 'Loja Exemplo - Parcela 1/3' });
+    expect(refsOf(first!.id)[0]).toMatch(/^ofx:fit-x:/);
+
+    // the next statement adopts the captured installment 2 (:f1), still nothing new
+    const next = OCTOBER_STATEMENT([{ fitid: 'fit-y', date: '20261015', amount: '-33.33', memo: 'Loja Exemplo - Parcela 2/3' }]);
+    const nextPreview = await buildCardOfxPreview({ account: card, buffer: next });
+    expect(nextPreview.proposals.map((p) => p.kind)).toEqual(['consume-future']);
+    expect(nextPreview.proposals[0]!.target).toMatchObject({ transactionId: second!.id });
+    await confirmCardOfxImport({ request: confirmRequest(nextPreview), account: card, userId: 'user-1' });
+    expect(onCard()).toHaveLength(3);
+  });
+
+  it('installment 1 charged 3 cents away (above the 2 left over by the division in 3) does not pair with the captured one', async () => {
+    const [first] = seedCapturedPlan();
+    const buffer = SEPTEMBER_STATEMENT([{ fitid: 'fit-x', date: '20260915', amount: '-33.31', memo: 'Loja Exemplo - Parcela 1/3' }]);
+
+    const preview = await buildCardOfxPreview({ account: card, buffer });
+
+    expect(preview.proposals.filter((p) => p.target?.transactionId === first!.id)).toEqual([]);
+    expect(preview.proposals.map((p) => p.kind)).toEqual(['create']);
+  });
+
+  it('the tolerance is only for installment 1 of a captured plan: a plain notification 1 cent apart is not paired', async () => {
+    const plain = seedTransaction({
+      householdId: HH, accountId: CARD, type: 'EXPENSE', categoryName: 'SHOPPING', description: 'Loja Exemplo', paid: true,
+      amount: 33.34, date: '2026-09-15', sourceRef: `notif:${'b2'.repeat(20)}`,
+    });
+    const buffer = SEPTEMBER_STATEMENT([{ fitid: 'fit-x', date: '20260915', amount: '-33.33', memo: 'Loja Exemplo' }]);
+
+    const preview = await buildCardOfxPreview({ account: card, buffer });
+
+    expect(preview.proposals.filter((p) => p.target?.transactionId === plain.id)).toEqual([]);
+  });
 });
