@@ -13,6 +13,7 @@ import 'dotenv/config';
 import '../shared/config/env.js';
 
 import { prisma } from '../shared/db/prisma.js';
+import { purgeStudyCaptures } from '../modules/captures/captures.xp.js';
 import { runInvestmentRefresh, type RefreshResult } from '../modules/investments/investments.refresh.js';
 import { createBcbClient } from '../modules/investments/market-data/bcb.client.js';
 import { createBrapiClient } from '../modules/investments/market-data/brapi.client.js';
@@ -21,11 +22,23 @@ export async function runInvestmentsJob(options: { today?: string; env?: { BRAPI
   const today = options.today ?? new Date().toISOString().slice(0, 10);
   const env = options.env ?? process.env;
   console.log(`[InvestmentsJob] Starting for ${today}`);
+  // P21 L6: the XP notifications "em estudo" are deleted after 60 days. A failure here does not stop the quotes and the
+  // snapshots, but it fails the run (a database error is a real fault).
+  let purged = 0;
+  let purgeError: unknown;
+  try {
+    purged = await purgeStudyCaptures();
+  } catch (error) {
+    purgeError = error;
+    console.error('[InvestmentsJob] Could not delete the old XP captures in study:', error instanceof Error ? error.message : 'Unknown error');
+  }
+  console.log(`[InvestmentsJob] Study captures deleted: ${purged}`);
   const result = await runInvestmentRefresh({
     brapi: createBrapiClient({ token: env.BRAPI_TOKEN, today: () => today }),
     bcb: createBcbClient(),
     today,
   });
+  if (purgeError) throw purgeError;
   for (const warning of result.warnings) console.warn(`[InvestmentsJob] WARNING: ${warning}`);
   console.log(
     `[InvestmentsJob] Finished. Quotes saved: ${result.quotesSaved}, rates saved: ${result.ratesSaved}, ` +

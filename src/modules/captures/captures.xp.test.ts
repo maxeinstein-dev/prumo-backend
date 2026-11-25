@@ -62,7 +62,7 @@ const db = vi.hoisted(() => {
         const made: Row[] = [];
         for (const d of data as Row[]) {
           if (s.captures.some((c) => c.householdId === d.householdId && c.dedupKey === d.dedupKey)) continue;
-          const row = { id: id('cap'), transactionId: null, createdAt: new Date(), ...d };
+          const row: Row = { id: id("cap"), transactionId: null, createdAt: new Date(), ...d };
           s.captures.push(row);
           made.push({ dedupKey: row.dedupKey });
         }
@@ -126,7 +126,6 @@ const db = vi.hoisted(() => {
 vi.mock('../../shared/db/prisma.js', () => ({ prisma: db.prisma }));
 vi.mock('../../shared/config/env.js', () => ({ env: {}, isLocalAuth: true, isProduction: false }));
 
-import { ConflictError } from '../../shared/errors/index.js';
 import { confirmCapture, countCaptures, ingestCaptures, listCaptures, reparseCaptures } from './captures.service.js';
 import { confirmInvestmentCapture, listStudyCaptures, purgeStudyCaptures } from './captures.xp.js';
 
@@ -257,7 +256,7 @@ describe('confirming an XP income draft', () => {
     const c = capture('XP_INCOME');
     const first = await confirmInvestmentCapture(scope, c.id, { positionId: p.id, date: '2026-11-24', amount: 12.34 });
     db.s.movements = db.s.movements.filter((m) => m.id !== first.movement.id);
-    await expect(confirmInvestmentCapture(scope, c.id, { positionId: p.id, date: '2026-11-24', amount: 12.34 })).rejects.toBeInstanceOf(ConflictError);
+    await expect(confirmInvestmentCapture(scope, c.id, { positionId: p.id, date: '2026-11-24', amount: 12.34 })).rejects.toMatchObject({ statusCode: 409 });
     expect(db.s.movements).toHaveLength(0);
   });
 });
@@ -307,7 +306,7 @@ describe('position of the confirmation', () => {
     account();
     position();
     const c = capture('XP_INCOME');
-    await expect(confirmInvestmentCapture(scope, c.id, { newPosition: { accountId: ACC }, date: '2026-11-24', amount: 12.34 })).rejects.toBeInstanceOf(ConflictError);
+    await expect(confirmInvestmentCapture(scope, c.id, { newPosition: { accountId: ACC }, date: '2026-11-24', amount: 12.34 })).rejects.toMatchObject({ statusCode: 409 });
     expect(db.s.captures[0]!.status).toBe('PENDING');
     expect(db.s.positions).toHaveLength(1);
     expect(db.s.movements).toHaveLength(0);
@@ -346,7 +345,7 @@ describe('only the XP drafts become movements, and only through this path', () =
     await expect(confirmInvestmentCapture(scope, capture('CARD_PURCHASE').id, body)).rejects.toMatchObject({ statusCode: 400 });
     await expect(confirmInvestmentCapture(scope, capture('XP_STUDY').id, body)).rejects.toMatchObject({ statusCode: 400 });
     await expect(confirmInvestmentCapture(scope, capture('XP_REINVEST_NOTICE').id, body)).rejects.toMatchObject({ statusCode: 400 });
-    await expect(confirmInvestmentCapture(scope, capture('XP_INCOME', { status: 'DISMISSED' }).id, body)).rejects.toBeInstanceOf(ConflictError);
+    await expect(confirmInvestmentCapture(scope, capture('XP_INCOME', { status: 'DISMISSED' }).id, body)).rejects.toMatchObject({ statusCode: 409 });
     expect(db.s.movements).toHaveLength(0);
   });
 

@@ -14,7 +14,7 @@ export const dayString = z
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
   .refine(isRealDay, 'Not a valid calendar day');
 
-const pastOrToday = dayString.refine((v) => v <= todayUtcDay(), 'The date cannot be in the future');
+export const pastOrToday = dayString.refine((v) => v <= todayUtcDay(), 'The date cannot be in the future');
 
 /** No coercion of null/false to 0: only a number or a plain numeric string. */
 const numeric = (message: string) =>
@@ -23,12 +23,12 @@ const numeric = (message: string) =>
 const decimalPlaces = (n: number, places: number): boolean => Math.abs(Math.round(n * 10 ** places) - n * 10 ** places) < 1e-6;
 
 /** Money in reais with at most two decimals; it becomes integer cents before any arithmetic. */
-const money = numeric('Expected a number')
+export const money = numeric('Expected a number')
   .refine((n) => n > 0, 'Must be greater than zero')
   .refine((n) => n < 1e11, 'Out of range')
   .refine((n) => decimalPlaces(n, 2), 'At most two decimal places');
 
-const quantity = numeric('Expected a number')
+export const quantity = numeric('Expected a number')
   .refine((n) => n > 0, 'Must be greater than zero')
   .refine((n) => n < 1e9, 'Out of range')
   .refine((n) => decimalPlaces(n, 6), 'At most six decimal places');

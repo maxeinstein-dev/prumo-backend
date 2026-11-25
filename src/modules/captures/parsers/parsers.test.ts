@@ -136,9 +136,12 @@ describe('Mercado Pago', () => {
 });
 
 describe('dispatch', () => {
-  it('returns null for apps without a parser (XP and any other package)', () => {
-    expect(parse('br.com.xp.carteira', 'Compra', 'Compra de R$ 10,00 APROVADA em LOJA para o cartão com final 1234.')).toBeNull();
+  it('returns null for apps without a parser (any other package)', () => {
     expect(parse('com.example.bank', 'Promoção', 'Ganhe um cupom.')).toBeNull();
+  });
+
+  it('the XP package never reads a bank text as a transaction: it is "em estudo"', () => {
+    expect(parse('br.com.xp.carteira', 'Compra', 'Compra de R$ 10,00 APROVADA em LOJA para o cartão com final 1234.')).toMatchObject({ kind: 'XP_STUDY', amountCents: null });
   });
 
   it('does not read a Nubank text sent by the Mercado Pago package', () => {
