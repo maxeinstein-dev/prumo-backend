@@ -1,3 +1,4 @@
+import { lockAccountsInOrder } from '../../shared/db/lock-accounts.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { NotFoundError, BadRequestError } from '../../shared/errors/index.js';
@@ -670,9 +671,10 @@ export async function transferBetweenAccounts(
 
   // Execute transfer in a transaction using BalanceService
   const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    // Verify sufficient available balance for non-credit accounts. The source row is locked and read inside the
-    // transaction, so two concurrent transfers cannot both pass the check against the same balance.
-    await tx.$queryRaw`SELECT id FROM accounts WHERE id = ${fromAccountId}::uuid FOR UPDATE`;
+    // Verify sufficient available balance for non-credit accounts. BOTH rows are locked, in id order and in one query
+    // (crossed transfers cannot deadlock; two transfers into the same destination cannot overwrite each other), and read
+    // inside the transaction, so two concurrent transfers cannot both pass the check against the same balance.
+    await lockAccountsInOrder(tx, [fromAccountId, toAccountId]);
     const lockedFrom = await tx.account.findFirst({ where: { id: fromAccountId, householdId, isActive: true } });
     if (!lockedFrom) {
       throw new NotFoundError('Source account');

@@ -1,3 +1,4 @@
+import { lockAccountsInOrder } from '../../shared/db/lock-accounts.js';
 import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { NotFoundError, BadRequestError, ForbiddenError, ConflictError } from '../../shared/errors/index.js';
@@ -934,7 +935,7 @@ async function updateTransactionOnce(
     }
     // Two moves that cross (A to B and B to A) would lock the two accounts in opposite orders: always take them by id.
     if (accountChanged && oldAccountId && newAccountId) {
-      await tx.$queryRaw`SELECT id FROM accounts WHERE id IN (${Prisma.join([oldAccountId, newAccountId].sort())}) ORDER BY id FOR UPDATE`;
+      await lockAccountsInOrder(tx, [oldAccountId, newAccountId]);
     }
     await options.beforeWrite?.(tx);
 

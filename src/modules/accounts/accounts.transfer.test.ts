@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../../generated/prisma/client.js';
 
 const calls: string[] = [];
+const lockArgs: any[][] = [];
 const db = vi.hoisted(() => ({
   outerFindFirst: vi.fn(),
   txFindFirst: vi.fn(),
@@ -40,7 +41,8 @@ const account = (id: string, available: number) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   calls.length = 0;
-  db.lock.mockImplementation(async () => { calls.push('lock'); });
+  lockArgs.length = 0;
+  db.lock.mockImplementation(async (...args: any[]) => { calls.push('lock'); lockArgs.push(args); });
   db.applyTransfer.mockImplementation(async () => { calls.push('apply'); });
   db.txCreate.mockResolvedValue({ id: 't' });
   db.txFindUnique.mockResolvedValue({});
@@ -66,5 +68,28 @@ describe('transferBetweenAccounts: balance check', () => {
     db.outerFindFirst.mockImplementation(async ({ where }: { where: { id: string } }) => account(where.id, 1));
     db.txFindFirst.mockImplementation(async ({ where }: { where: { id: string } }) => account(where.id, 100));
     await expect(transferBetweenAccounts('h1', { fromAccountId: FROM, toAccountId: TO, amount: 50 })).resolves.toBeTruthy();
+  });
+});
+
+describe('transferBetweenAccounts: lock both accounts', () => {
+  const lockedIds = (args: any[]) => args.slice(1).flatMap((a) => (a && a.values ? a.values : [a]));
+  const run = async (from: string, to: string) => {
+    db.outerFindFirst.mockImplementation(async ({ where }: { where: { id: string } }) => account(where.id, 100));
+    db.txFindFirst.mockImplementation(async ({ where }: { where: { id: string } }) => account(where.id, 100));
+    await transferBetweenAccounts('h1', { fromAccountId: from, toAccountId: to, amount: 10 });
+  };
+
+  it('takes both rows in one query, ordered by id, before any balance read or write', async () => {
+    db.txFindFirst.mockClear();
+    await run(FROM, TO);
+    expect(db.lock).toHaveBeenCalledTimes(1);
+    expect(lockedIds(lockArgs[0]!)).toEqual([FROM, TO]);
+    expect(lockArgs[0]![0].join('?')).toMatch(/ORDER BY id FOR UPDATE/);
+    expect(calls).toEqual(['lock', 'apply']);
+  });
+
+  it('uses the same order for the opposite direction (no crossed lock order)', async () => {
+    await run(TO, FROM);
+    expect(lockedIds(lockArgs[0]!)).toEqual([FROM, TO]);
   });
 });
