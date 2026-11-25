@@ -2,6 +2,7 @@ import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../../shared/errors/index.js';
 import { plannedCentsFor, type PlanGoal } from './savings-goals.planning.js';
+import { goalIdsWithOpenPositions } from '../investments/investments.goals.js';
 
 /** A goal row as the planning code needs it (Decimal fields as Prisma returns them). */
 export interface GoalRow {
@@ -14,6 +15,14 @@ export interface GoalRow {
   monthlyContribution: { toNumber(): number } | null;
   contributionDay: number | null;
   dueMonth: string | null;
+}
+
+/** A goal with open investment positions linked is worth them (P21 L4): its kept amount is not edited by hand. */
+export const POSITIONS_GOAL_MESSAGE =
+  'This goal takes its value from the investment positions linked to it: it cannot receive contributions or have its current amount edited by hand';
+
+export async function assertNoLinkedPositions(db: Pick<Prisma.TransactionClient, 'investmentPosition'>, goalId: string): Promise<void> {
+  if ((await goalIdsWithOpenPositions([goalId], db as never)).size > 0) throw new BadRequestError(POSITIONS_GOAL_MESSAGE);
 }
 
 export const toCents = (n: number): number => Math.round(n * 100);
@@ -96,6 +105,7 @@ export async function contribute(params: ContributeParams) {
 
   return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     const goal = await lockGoal(tx, params.goalId, params.householdId);
+    await assertNoLinkedPositions(tx, goal.id);
     if (!goal.accountId) throw new BadRequestError('Link the goal to an account before putting money in it');
 
     const inMonth = await tx.savingsGoalContribution.findMany({ where: { goalId: goal.id, month }, select: { amount: true } });
