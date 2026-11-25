@@ -32,6 +32,7 @@ import { dashboardRoutes } from './modules/dashboard/index.js';
 import { deviceRoutes } from './modules/devices/index.js';
 import { captureRoutes } from './modules/captures/index.js';
 import { buildCommit } from './shared/utils/buildInfo.js';
+import { checkCorsOrigin } from './shared/utils/cors-origin.js';
 import { payrollRoutes } from './modules/payroll/index.js';
 import { organizeRoutes, peopleRoutes, settlementRoutes, transactionSharesRoutes } from './modules/people/index.js';
 
@@ -183,7 +184,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   // CORS
-  // Allow localhost (any port) and any domain containing "recta.app"
+  // Hosts are compared exactly (see checkCorsOrigin): local hosts, recta.app and its subdomains, ALLOWED_ORIGINS.
   await app.register(cors, {
     origin: (origin, callback) => {
       // Allow requests with no origin (like mobile apps or curl requests)
@@ -194,42 +195,16 @@ export async function buildApp(): Promise<FastifyInstance> {
         callback(null, true);
         return;
       }
-      
-      // Allow localhost (any protocol, any port)
-      if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+
+      const decision = checkCorsOrigin(origin, { isProduction, allowedOrigins: env.ALLOWED_ORIGINS });
+      if (decision.allowed) {
         if (isProduction) {
-          console.log(`[CORS] Allowing localhost origin: ${origin}`);
+          console.log(`[CORS] Allowing origin (${decision.reason}): ${origin}`);
         }
         callback(null, true);
         return;
       }
-      
-      // Allow any domain containing "recta.app"
-      if (origin.includes('recta.app')) {
-        if (isProduction) {
-          console.log(`[CORS] Allowing recta.app origin: ${origin}`);
-        }
-        callback(null, true);
-        return;
-      }
-      
-      // In development, allow all origins
-      if (!isProduction) {
-        callback(null, true);
-        return;
-      }
-      
-      // In production, check ALLOWED_ORIGINS env var for additional origins
-      const allowedOrigins = env.ALLOWED_ORIGINS;
-      if (allowedOrigins) {
-        const allowedList = allowedOrigins.split(',').map(o => o.trim()).filter(Boolean);
-        if (allowedList.includes(origin)) {
-          console.log(`[CORS] Allowing origin from ALLOWED_ORIGINS: ${origin}`);
-          callback(null, true);
-          return;
-        }
-      }
-      
+
       // Reject if none of the above conditions match
       console.warn(`[CORS] Rejecting origin: ${origin}`);
       callback(new Error('Not allowed by CORS'), false);
