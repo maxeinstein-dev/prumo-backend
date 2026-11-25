@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   cashEffectCents,
+  deriveAmounts,
   computePosition,
   incomeLast12MonthsCents,
   sortMovements,
@@ -163,5 +164,21 @@ describe('incomeLast12MonthsCents', () => {
   ];
   it('sums only income inside the 12 months ending today', () => {
     expect(incomeLast12MonthsCents(ms, '2026-11-25')).toBe(600);
+  });
+});
+
+describe('deriveAmounts: the money of a stock movement from quantity, unit price and/or total', () => {
+  it('total from quantity x unit price, in whole cents', () => {
+    expect(deriveAmounts({ quantity: 3, unitPrice: 10.1 })).toEqual({ amountCents: 3030, unitPrice: 10.1 });
+    expect(deriveAmounts({ quantity: 0.333333, unitPrice: 100 })).toEqual({ amountCents: 3333, unitPrice: 100 });
+  });
+  it('unit price from the total and the quantity, six decimals', () => {
+    expect(deriveAmounts({ quantity: 3, amountCents: 10000 })).toEqual({ amountCents: 10000, unitPrice: 33.333333 });
+  });
+  it('when both come, the total wins (it is what left the account) and the unit price is kept as typed', () => {
+    expect(deriveAmounts({ quantity: 3, unitPrice: 33.33, amountCents: 10000 })).toEqual({ amountCents: 10000, unitPrice: 33.33 });
+  });
+  it('nothing to derive from is refused', () => {
+    expect(() => deriveAmounts({ quantity: 3 })).toThrow();
   });
 });

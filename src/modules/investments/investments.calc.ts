@@ -115,3 +115,21 @@ export function incomeLast12MonthsCents(movements: Pick<CalcMovement, 'type' | '
     .filter((m) => m.type === 'INCOME' && m.date > since && m.date <= today)
     .reduce((sum, m) => sum + m.amountCents, 0);
 }
+
+/**
+ * Money of a stock movement. The total (integer cents) is what moved; when it is missing it is quantity x unit price
+ * rounded to the cent. A missing unit price is total / quantity at six decimals. When both come, the total wins.
+ */
+export function deriveAmounts(input: { quantity: number; unitPrice?: number; amountCents?: number }): {
+  amountCents: number;
+  unitPrice: number;
+} {
+  const qMicro = BigInt(toMicro(input.quantity));
+  if (input.amountCents !== undefined) {
+    const unitPrice = input.unitPrice ?? Number(divRound(BigInt(input.amountCents) * 10_000_000_000n, qMicro)) / MICRO;
+    return { amountCents: input.amountCents, unitPrice };
+  }
+  if (input.unitPrice === undefined) throw new BadRequestError('Inform the amount or the unit price');
+  const priceMicro = BigInt(Math.round(input.unitPrice * MICRO));
+  return { amountCents: Number(divRound(qMicro * priceMicro, 10_000_000_000n)), unitPrice: input.unitPrice };
+}
