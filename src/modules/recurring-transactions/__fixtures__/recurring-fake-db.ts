@@ -4,6 +4,7 @@
  * column), amounts are numbers (read back as decimal-likes), interactive transactions are all-or-nothing, and
  * transaction.sourceRef is unique per household (P2002), like the real table.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { vi } from 'vitest';
 import { dayString } from '../recurring-dates.js';
 
@@ -218,22 +219,42 @@ export const fakePrisma = {
   },
   /** Row locks (SELECT ... FOR UPDATE) have nothing to lock in memory. */
   $queryRaw: vi.fn(async () => []),
-  /** The advisory lock apply takes (no real locking; tests look at the calls). */
-  $executeRaw: vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
+  /**
+   * pg_advisory_xact_lock: a lock per key held until the end of the interactive transaction that took it, so a second
+   * transaction asking for the same key waits (concurrent calls interleave at every await, like two connections).
+   * Taking the same key twice in one transaction is a no-op, like Postgres.
+   */
+  $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
     if (!strings.join('?').includes('pg_advisory_xact_lock')) throw new Error(`Unexpected raw query: ${strings.join('?')}`);
+    const held = txLocks.getStore();
+    const key = String(values[0]);
+    if (!held || held.has(key)) return 0;
+    while (lockTails.has(key)) await lockTails.get(key);
+    let release!: () => void;
+    lockTails.set(key, new Promise<void>((resolve) => (release = resolve)));
+    held.set(key, () => {
+      lockTails.delete(key);
+      release();
+    });
     return 0;
   }),
   $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => {
     const saved = snapshot();
+    const held = new Map<string, () => void>();
     try {
-      return await callback(fakePrisma);
+      return await txLocks.run(held, () => callback(fakePrisma));
     } catch (error) {
       for (const key of Object.keys(store)) delete store[key];
       Object.assign(store, saved);
       throw error;
+    } finally {
+      for (const release of held.values()) release();
     }
   }),
 };
+
+const txLocks = new AsyncLocalStorage<Map<string, () => void>>();
+const lockTails = new Map<string, Promise<void>>();
 
 // ---- Transactions service stand-ins (they keep the account balance like the real one) -----------------------
 
