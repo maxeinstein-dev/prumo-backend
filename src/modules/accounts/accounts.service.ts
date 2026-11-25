@@ -1,6 +1,7 @@
 import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { NotFoundError, BadRequestError } from '../../shared/errors/index.js';
+import { fromCents, toCents } from '../transactions/credit-card-invoice-forecast.js';
 import { closingDayFromDue } from './closing-day.js';
 import { CategoryName, AccountType, TransactionType } from '../../shared/enums/index.js';
 import { applyTransfer, updateBalanceForNormalTransaction, recalculateCreditCardLimit } from '../../shared/services/balance.service.js';
@@ -812,6 +813,9 @@ export async function getAccountsSummary(householdId: string) {
     where: { householdId, isActive: true },
   });
 
+  // Totals are summed in integer cents and converted once at the end
+  const typeCents: Record<string, number> = {};
+  const currencyCents: Record<string, number> = {};
   const summary = {
     totalAccounts: accounts.length,
     byType: {} as Record<string, { count: number; total: number }>,
@@ -819,19 +823,22 @@ export async function getAccountsSummary(householdId: string) {
   };
 
   for (const account of accounts) {
+    const cents = toCents(account.balance.toNumber());
+
     // By type
     if (!summary.byType[account.type]) {
       summary.byType[account.type] = { count: 0, total: 0 };
+      typeCents[account.type] = 0;
     }
     summary.byType[account.type].count++;
-    summary.byType[account.type].total += account.balance.toNumber();
+    typeCents[account.type] += cents;
 
     // By currency
-    if (!summary.byCurrency[account.currency]) {
-      summary.byCurrency[account.currency] = 0;
-    }
-    summary.byCurrency[account.currency] += account.balance.toNumber();
+    currencyCents[account.currency] = (currencyCents[account.currency] ?? 0) + cents;
   }
+
+  for (const [type, cents] of Object.entries(typeCents)) summary.byType[type].total = fromCents(cents);
+  for (const [currency, cents] of Object.entries(currencyCents)) summary.byCurrency[currency] = fromCents(cents);
 
   return summary;
 }

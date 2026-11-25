@@ -15,6 +15,7 @@ import { monthOrRangeWhere, effectiveMonthWhere, addMonths, competenceWithinRang
 import { effectiveClosingDay } from '../accounts/closing-day.js';
 import { executeRecurringTransaction } from '../recurring-transactions/recurring-transactions.service.js';
 import { dayString } from '../recurring-transactions/recurring-dates.js';
+import { openingDebtFromMovements } from './credit-card-opening-debt.js';
 import { fromCents, invoiceDates, invoiceState, loadInvoiceForecast, toCents } from './credit-card-invoice-forecast.js';
 import { applyTransfer, applyAllocation, applyDeallocation, recalculateCreditCardLimit, updateBalanceForNormalTransaction } from '../../shared/services/balance.service.js';
 import type {
@@ -2111,25 +2112,8 @@ export async function calculateCreditCardInvoice(
     } else {
       // Has movements from this invoice on, but none before
       // Calculate net change from this invoice on
-      let currentPeriodNetChange = 0;
-      for (const t of movementsFromPeriod) {
-        if (t.attachmentUrl?.startsWith(`invoice_pay:${accountId}:`)) {
-          // Payment decreases debt
-          currentPeriodNetChange -= t.amount.toNumber();
-        } else if (t.accountId === accountId && t.categoryName) {
-          // Use transaction type if available, otherwise infer from category
-          const isIncome = t.type === TransactionType.INCOME || 
-            (t.type !== TransactionType.EXPENSE && getCategoriesByType(CategoryType.INCOME).includes(t.categoryName as any));
-          if (isIncome) {
-            currentPeriodNetChange -= t.amount.toNumber(); // Income decreases debt
-          } else {
-            currentPeriodNetChange += t.amount.toNumber(); // Expense increases debt
-          }
-        }
-      }
-      
-      // Initial balance = current balance - current period net change
-      previousBalance = Math.max(0, account.balance.toNumber() - currentPeriodNetChange);
+      // Opening debt = current balance minus what this period's movements did to it (summed in cents)
+      previousBalance = openingDebtFromMovements(account.balance, movementsFromPeriod, accountId);
     }
   }
 
@@ -2378,25 +2362,8 @@ export async function payCreditCardInvoice(input: PayInvoiceInput) {
       } else {
         // Has transactions in current period but none before
         // Calculate net change in current period
-        let currentPeriodNetChange = 0;
-        for (const t of currentPeriodTransactions) {
-          if (t.attachmentUrl?.startsWith(`invoice_pay:${accountId}:`)) {
-            // Payment decreases debt
-            currentPeriodNetChange -= t.amount.toNumber();
-        } else if (t.accountId === accountId && t.categoryName) {
-          // Use transaction type if available, otherwise infer from category
-          const isIncome = t.type === TransactionType.INCOME || 
-            (t.type !== TransactionType.EXPENSE && getCategoriesByType(CategoryType.INCOME).includes(t.categoryName as any));
-          if (isIncome) {
-            currentPeriodNetChange -= t.amount.toNumber(); // Income decreases debt
-          } else {
-            currentPeriodNetChange += t.amount.toNumber(); // Expense increases debt
-          }
-        }
-      }
-        
-        // Initial balance = current balance - current period net change
-        invoicePreviousBalance = Math.max(0, creditCard.balance.toNumber() - currentPeriodNetChange);
+        // Opening debt = current balance minus what this period's movements did to it (summed in cents)
+        invoicePreviousBalance = openingDebtFromMovements(creditCard.balance, currentPeriodTransactions, accountId);
       }
     }
 
