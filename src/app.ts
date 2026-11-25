@@ -25,6 +25,7 @@ import { maxfinImportRoutes } from './modules/transactions/maxfin-import.routes.
 import { cardOfxImportRoutes } from './modules/transactions/card-ofx-import.routes.js';
 import { budgetRoutes } from './modules/budgets/index.js';
 import { savingsGoalRoutes } from './modules/savings-goals/index.js';
+import { investmentRoutes } from './modules/investments/investments.routes.js';
 import { recurringTransactionRoutes } from './modules/recurring-transactions/index.js';
 import { feedbackRoutes } from './modules/feedback/index.js';
 import { notificationRoutes } from './modules/notifications/index.js';
@@ -307,6 +308,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(payrollRoutes, { prefix: '/payroll' });
   await app.register(budgetRoutes, { prefix: '/budgets' });
   await app.register(savingsGoalRoutes, { prefix: '/savings-goals' });
+  await app.register(investmentRoutes, { prefix: '/investments' });
   await app.register(recurringTransactionRoutes, { prefix: '/recurring-transactions' });
   await app.register(feedbackRoutes, { prefix: '/feedback' });
   await app.register(notificationRoutes, { prefix: '/notifications' });
