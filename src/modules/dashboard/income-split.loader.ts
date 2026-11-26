@@ -22,12 +22,18 @@ function lastDayOf(month: string): string {
  * own-share rule the budget summary uses, so the split never disagrees with the budgets.
  */
 export async function realizedByCategory(householdId: string, month: string): Promise<Map<string | null, number>> {
+  return (await realizedOfMonth(householdId, month)).byCategory;
+}
+
+/** The realized spending per category and, apart, the cents of the aportes in it (the TRANSFER rows of the set, P24). */
+async function realizedOfMonth(householdId: string, month: string): Promise<{ byCategory: Map<string | null, number>; investedCents: number }> {
   const where = budgetSpendingWhere({ householdId, categoryName: GENERAL_BUDGET_CATEGORY, type: 'EXPENSE' }, monthOrRangeWhere({ month }));
   const [rows, theirShares] = await Promise.all([
     prisma.transaction.findMany({ where, select: { id: true, type: true, isRefund: true, categoryName: true, amount: true } }),
     loadTheirShares(prisma, householdId, where),
   ]);
-  return ownCentsByCategory(rows, theirShares);
+  const invested = ownCentsByCategory(rows.filter((row) => row.type === 'TRANSFER'), theirShares);
+  return { byCategory: ownCentsByCategory(rows, theirShares), investedCents: [...invested.values()].reduce((a, b) => a + b, 0) };
 }
 
 /**
@@ -70,7 +76,7 @@ export async function loadIncomeSplit(params: { householdId: string; month: stri
   const [map, income, realized, committed] = await Promise.all([
     loadGroupMap(householdId),
     expectedIncomeByMonth(householdId, [month]),
-    realizedByCategory(householdId, month),
+    realizedOfMonth(householdId, month),
     committedByCategory(householdId, month, today),
   ]);
   return buildIncomeSplit({
@@ -78,7 +84,8 @@ export async function loadIncomeSplit(params: { householdId: string; month: stri
     incomeCents: income.get(month) ?? 0,
     groups: map.groups,
     groupOf: map.groupOf,
-    realizedByCategory: realized,
+    realizedByCategory: realized.byCategory,
     committedByCategory: committed,
+    investedCents: realized.investedCents,
   });
 }

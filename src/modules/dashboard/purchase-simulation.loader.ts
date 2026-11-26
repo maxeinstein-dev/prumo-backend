@@ -2,7 +2,7 @@ import { prisma } from '../../shared/db/prisma.js';
 import { BadRequestError, NotFoundError } from '../../shared/errors/index.js';
 import { addMonths, effectiveMonth, effectiveMonthRangeWhere, monthDistance } from '../../shared/utils/competence.js';
 import { effectiveClosingDay } from '../accounts/closing-day.js';
-import { NOT_INVOICE_PAYMENT } from '../budgets/budget-spending.js';
+import { INVESTMENT_CONTRIBUTION_WHERE, NOT_INVOICE_PAYMENT } from '../budgets/budget-spending.js';
 import { deductionCents, loadTheirShares } from '../people/own-share.js';
 import { defaultSplitParts } from '../recurring-transactions/default-split.js';
 import { dayString } from '../recurring-transactions/recurring-dates.js';
@@ -73,8 +73,9 @@ export async function loadPurchaseSimulation(params: PurchaseSimulationParams): 
 
   const [rows, accounts, income, budgets] = await Promise.all([
     prisma.transaction.findMany({
-      where: { householdId, type: 'EXPENSE', AND: [effectiveMonthRangeWhere(averageFrom, lastMonth), NOT_INVOICE_PAYMENT] },
-      select: { id: true, amount: true, categoryName: true, date: true, competenceMonth: true },
+      // The expenses and, like the budgets, the aportes (P24); the average of the past months stays expenses only
+      where: { householdId, OR: [{ type: 'EXPENSE' }, INVESTMENT_CONTRIBUTION_WHERE], AND: [effectiveMonthRangeWhere(averageFrom, lastMonth), NOT_INVOICE_PAYMENT] },
+      select: { id: true, type: true, amount: true, categoryName: true, date: true, competenceMonth: true },
     }),
     prisma.account.findMany({ where: { householdId, isActive: true }, select: { id: true } }),
     expectedIncomeByMonth(householdId, months),
@@ -89,7 +90,7 @@ export async function loadPurchaseSimulation(params: PurchaseSimulationParams): 
   for (const row of rows) {
     const month = effectiveMonth(row);
     const value = cents(row.amount);
-    if (month >= averageFrom && month <= averageTo) averageTotalCents += value;
+    if (month >= averageFrom && month <= averageTo && row.type === 'EXPENSE') averageTotalCents += value;
     if (months.includes(month)) {
       add(postedByMonth, month, row.categoryName ?? '', value);
       const share = theirShares.get(row.id);

@@ -23,6 +23,8 @@ export interface IncomeSplitInput {
   realizedByCategory: ReadonlyMap<string | null, number>;
   /** Cents still committed in the month per categoryName: expense occurrences not generated yet. */
   committedByCategory: ReadonlyMap<string | null, number>;
+  /** Cents of the aportes of the month (P24). Already inside realizedByCategory: shown apart, never added again. */
+  investedCents?: number;
 }
 
 export interface IncomeSplitGroup {
@@ -55,6 +57,8 @@ export interface IncomeSplit {
   leftover: { amount: number; percentOfIncome: number | null };
   /** Sum of the groups marked as housing, against the 0.30 reference. */
   housing: { amount: number; percentOfIncome: number | null; reference: number; housingGroups: number };
+  /** The aportes of the month (transfers into an investment account, P24): part of totalSpent, inside their groups. */
+  invested: { amount: number; percentOfIncome: number | null };
 }
 
 const fromCents = (c: number): number => c / 100;
@@ -110,6 +114,7 @@ export function buildIncomeSplit(input: IncomeSplitInput): IncomeSplit {
     groups,
     totalSpent: fromCents(spentCents),
     leftover: { amount: fromCents(income - spentCents), percentOfIncome: shareOf(income - spentCents, income) },
+    invested: { amount: fromCents(input.investedCents ?? 0), percentOfIncome: shareOf(input.investedCents ?? 0, income) },
     housing: {
       amount: fromCents(housingCents),
       percentOfIncome: shareOf(housingCents, income),

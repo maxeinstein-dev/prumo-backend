@@ -818,6 +818,8 @@ export async function transactionRoutes(app: FastifyInstance) {
           fromAccountId: { type: 'string', format: 'uuid' },
           toAccountId: { type: 'string', format: 'uuid' },
           amount: { type: 'number' },
+          // Optional; an aporte (into an investment account) counts in the budget of this category (P24)
+          categoryName: { type: 'string' },
         },
       },
       response: {
