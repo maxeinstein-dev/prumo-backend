@@ -27,6 +27,20 @@ export interface BcbClient {
   fetchSeries(index: MarketIndexName, from: string, to: string): Promise<SeriesResult>;
 }
 
+/**
+ * The SGS answers 404 with "Value(s) not found" when the period has no rate yet (the CDI of a day is published on the next
+ * business day, so the early run often asks only for days still unpublished). That is "nothing new", not a failure; any
+ * other 404 is still a warning.
+ */
+async function isNothingPublished(response: Response): Promise<boolean> {
+  try {
+    const body = (await response.json()) as { erro?: { detail?: unknown } } | null;
+    return typeof body?.erro?.detail === 'string' && body.erro.detail.includes('Value(s) not found');
+  } catch {
+    return false;
+  }
+}
+
 export interface BcbOptions {
   fetch?: typeof fetch;
   timeoutMs?: number;
@@ -60,6 +74,7 @@ export function createBcbClient(options: BcbOptions = {}): BcbClient {
       let body: unknown;
       try {
         const response = await doFetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+        if (response.status === 404 && (await isNothingPublished(response))) return { rates: [], warnings: [] };
         if (!response.ok) return { rates: [], warnings: [`Banco Central answered HTTP ${response.status} for ${index}: rates not updated`] };
         body = await response.json();
       } catch {

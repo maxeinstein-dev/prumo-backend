@@ -6,7 +6,8 @@
  *   3. the snapshot of each investment account that holds positions, into account_valuations.
  *
  * A fetch problem is only a warning (nothing stored is erased; the snapshot uses the last known values). The process exits
- * with an error when something really fails: a database error, or a snapshot that could not be recorded.
+ * with an error when something really fails: a database error, a snapshot that could not be recorded, or market data
+ * that is still stale after the fetch (investments.staleness.ts), so the workflow opens its issue.
  * No server is started. Prints counts only: no tokens, amounts or names.
  */
 import 'dotenv/config';
@@ -15,6 +16,7 @@ import '../shared/config/env.js';
 import { prisma } from '../shared/db/prisma.js';
 import { purgeStudyCaptures } from '../modules/captures/captures.xp.js';
 import { runInvestmentRefresh, type RefreshResult } from '../modules/investments/investments.refresh.js';
+import { isStale, StaleMarketDataError } from '../modules/investments/investments.staleness.js';
 import { createBcbClient } from '../modules/investments/market-data/bcb.client.js';
 import { createBrapiClient } from '../modules/investments/market-data/brapi.client.js';
 
@@ -44,6 +46,8 @@ export async function runInvestmentsJob(options: { today?: string; env?: { BRAPI
     `[InvestmentsJob] Finished. Quotes saved: ${result.quotesSaved}, rates saved: ${result.ratesSaved}, ` +
       `snapshots recorded: ${result.snapshots.length}, warnings: ${result.warnings.length}`,
   );
+  // Stale quotes or index rates fail the run (the workflow opens its issue); everything above was already done.
+  if (isStale(result.stale)) throw new StaleMarketDataError(result.stale);
   return result;
 }
 

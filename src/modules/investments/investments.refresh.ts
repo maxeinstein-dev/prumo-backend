@@ -3,6 +3,7 @@ import { prisma } from '../../shared/db/prisma.js';
 import { recordAccountSnapshots } from './investments.snapshot.js';
 import type { BcbClient, MarketIndexName } from './market-data/bcb.client.js';
 import type { BrapiClient } from './market-data/brapi.client.js';
+import { staleMarketData, type StaleResult } from './investments.staleness.js';
 
 /**
  * The daily routine of the investments (P21 L2): fetch the closes of the tickers with an open position, fetch the index
@@ -25,6 +26,8 @@ export interface RefreshResult {
   ratesSaved: number;
   snapshots: Array<{ accountId: string; totalCents: number }>;
   warnings: string[];
+  /** What is still stale in the stored data after this run's fetches (investments.staleness.ts). */
+  stale: StaleResult;
 }
 
 interface OpenPosition {
@@ -77,6 +80,7 @@ export async function runInvestmentRefresh(deps: { brapi: BrapiClient; bcb: BcbC
 
   // ---- index rates
   let ratesSaved = 0;
+  const indexesInUse: Array<{ index: string; inUseSince: string }> = [];
   for (const index of MARKET_INDEXES) {
     const mine = positions.filter((p) => p.kind === 'FIXED_INCOME' && p.indexer === index);
     if (mine.length === 0) continue;
@@ -84,6 +88,7 @@ export async function runInvestmentRefresh(deps: { brapi: BrapiClient; bcb: BcbC
     if (dates.length === 0) continue;
     let needed = dates.sort()[0]!;
     if (index === 'IPCA') needed = `${needed.slice(0, 7)}-01`;
+    indexesInUse.push({ index, inUseSince: needed });
     const floor = minusDays(today, MAX_WINDOW_DAYS);
     if (needed < floor) needed = floor;
 
@@ -107,5 +112,18 @@ export async function runInvestmentRefresh(deps: { brapi: BrapiClient; bcb: BcbC
   // ---- snapshots (always, with the last values known)
   const snapshot = await recordAccountSnapshots(today);
   if (snapshot.failedAccountIds.length > 0) throw new InvestmentRefreshError(snapshot.failedAccountIds);
-  return { quotesSaved, ratesSaved, snapshots: snapshot.recorded, warnings };
+
+  // ---- what is still stale in what is stored (the job fails on it, after everything above was done)
+  const asOf = asDate(today);
+  const lastQuotes = tickers.length
+    ? await prisma.assetQuote.groupBy({ by: ['ticker'], where: { ticker: { in: tickers }, date: { lte: asOf } }, _max: { date: true } })
+    : [];
+  const lastQuoteOf = new Map((lastQuotes as Array<{ ticker: string; _max: { date: Date | null } }>).map((q) => [q.ticker, q._max.date ? dayOf(q._max.date) : null]));
+  const indexes = [];
+  for (const i of indexesInUse) {
+    const last = await prisma.indexRate.aggregate({ where: { index: i.index as MarketIndexName, date: { lte: asOf } }, _max: { date: true } });
+    indexes.push({ ...i, lastRateDay: last._max.date ? dayOf(last._max.date) : null });
+  }
+  const stale = staleMarketData({ today, tickers: tickers.map((ticker) => ({ ticker, lastQuoteDay: lastQuoteOf.get(ticker) ?? null })), indexes });
+  return { quotesSaved, ratesSaved, snapshots: snapshot.recorded, warnings, stale };
 }

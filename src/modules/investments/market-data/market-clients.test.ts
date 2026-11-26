@@ -60,6 +60,34 @@ describe('brapi client (one request per ticker, like the Rende)', () => {
     expect(JSON.stringify(r)).not.toContain(TOKEN);
   });
 
+  it('HTTP 429 (rate limit) waits and asks again: a ticker that answers on the retry is kept with no warning', async () => {
+    let calls = 0;
+    const fetchFn = byTicker({
+      TEST11: () => one('TEST11', 10.25),
+      SLOW11: () => (++calls < 3 ? json({ message: 'Too many requests' }, 429) : one('SLOW11', 9.5)),
+    });
+    const sleep = vi.fn(async () => undefined);
+    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn), sleep, today: () => '2026-11-26' }).fetchQuotes(['TEST11', 'SLOW11']);
+    expect(r.quotes.map((q) => q.ticker).sort()).toEqual(['SLOW11', 'TEST11']);
+    expect(r.warnings).toEqual([]);
+    expect(calls).toBe(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('HTTP 429 that never clears gives up after 3 retries with one warning; other errors are never retried', async () => {
+    let limited = 0;
+    let gone = 0;
+    const fetchFn = byTicker({
+      LIMIT11: () => (limited++, json({}, 429)),
+      GONE11: () => (gone++, json({}, 404)),
+    });
+    const sleep = vi.fn(async () => undefined);
+    const r = await createBrapiClient({ token: TOKEN, fetch: asFetch(fetchFn), sleep }).fetchQuotes(['LIMIT11', 'GONE11']);
+    expect(limited).toBe(4);
+    expect(gone).toBe(1);
+    expect(r.warnings.filter((w) => w.includes('LIMIT11'))).toEqual(['brapi answered HTTP 429 for LIMIT11: quote not updated']);
+  });
+
   it('never has more than 3 requests in flight at the same time, and still asks them all', async () => {
     let inFlight = 0;
     let peak = 0;
@@ -174,6 +202,14 @@ describe('Banco Central (SGS) client', () => {
   it('an empty answer is not an error (nothing published in the period)', async () => {
     const r = await createBcbClient({ fetch: asFetch(async () => json([])) }).fetchSeries('CDI', '2026-11-25', '2026-11-25');
     expect(r).toEqual({ rates: [], warnings: [] });
+  });
+
+  it('the SGS answers 404 "Value(s) not found" for a period with nothing published yet: that is not a warning', async () => {
+    const empty = { erro: { statusCode: 404, detail: 'br.gov.bcb.pec.sgs.comum.excecoes.SGSNegocioException: Value(s) not found' } };
+    const r = await createBcbClient({ fetch: asFetch(async () => json(empty, 404)) }).fetchSeries('CDI', '2026-11-26', '2026-11-26');
+    expect(r).toEqual({ rates: [], warnings: [] });
+    const other = await createBcbClient({ fetch: asFetch(async () => json({ message: 'no such series' }, 404)) }).fetchSeries('CDI', '2026-11-26', '2026-11-26');
+    expect(other.warnings.join(' ')).toContain('404');
   });
 
   it('network error, timeout and HTTP error become warnings, with no rates', async () => {
