@@ -32,10 +32,20 @@ export interface BrapiOptions {
   /** 'YYYY-MM-DD' used when the answer carries no time for a quote. */
   today?: () => string;
   baseUrl?: string;
+  /** Waits between retries after HTTP 429 (tests pass a fake). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const TICKER = /^[A-Z0-9]{1,12}$/;
 const MAX_IN_FLIGHT = 3;
+/** HTTP 429 (rate limit): wait and ask again, up to 3 times; a Retry-After in seconds wins, capped at 30 s. */
+const RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
+const MAX_RETRY_AFTER_MS = 30_000;
+
+function retryAfterMs(response: Response, fallback: number): number {
+  const value = Number(response.headers?.get?.('retry-after'));
+  return Number.isFinite(value) && value > 0 ? Math.min(value * 1000, MAX_RETRY_AFTER_MS) : fallback;
+}
 
 function dayOfTime(value: unknown): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return new Date(value * 1000).toISOString().slice(0, 10);
@@ -51,15 +61,26 @@ export function createBrapiClient(options: BrapiOptions): BrapiClient {
   const timeoutMs = options.timeoutMs ?? 15_000;
   const baseUrl = options.baseUrl ?? 'https://brapi.dev/api/quote';
   const today = options.today ?? (() => new Date().toISOString().slice(0, 10));
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   async function fetchOne(ticker: string): Promise<{ quote?: FetchedQuote; warning?: string }> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timer = setTimeout(() => controller.abort(), timeoutMs); // per request: restarted for each retry
     try {
-      const response = await doFetch(`${baseUrl}/${ticker}`, {
+      let response = await doFetch(`${baseUrl}/${ticker}`, {
         headers: { Authorization: `Bearer ${options.token!.trim()}`, Accept: 'application/json' },
         signal: controller.signal,
       });
+      for (const delay of RETRY_DELAYS_MS) {
+        if (response.status !== 429) break;
+        clearTimeout(timer);
+        await sleep(retryAfterMs(response, delay));
+        timer = setTimeout(() => controller.abort(), timeoutMs);
+        response = await doFetch(`${baseUrl}/${ticker}`, {
+          headers: { Authorization: `Bearer ${options.token!.trim()}`, Accept: 'application/json' },
+          signal: controller.signal,
+        });
+      }
       if (!response.ok) return { warning: `brapi answered HTTP ${response.status} for ${ticker}: quote not updated` };
       const body = (await response.json()) as { results?: unknown } | null;
       const results = body?.results;
