@@ -91,6 +91,7 @@ model Household {
   monthClosings         MonthClosing[]
   categoryGroups        CategoryGroup[]
   categoryGroupAssignments CategoryGroupAssignment[]
+  openFinanceLinks      OpenFinanceLink[]
 
   // When the default spending groups (Casa, Pessoal, Dia a dia) were created, on demand, once. Null = never: a household
   // that later deletes every group does not get the defaults back.
@@ -209,6 +210,7 @@ model Account {
   employmentItems       EmploymentItem[]
   valuations            AccountValuation[]
   investmentPositions   InvestmentPosition[]
+  openFinanceLinks      OpenFinanceLink[]
 
   // Indexes
   @@index([householdId])
@@ -1299,4 +1301,27 @@ model IndexRate {
 
   @@unique([index, date])
   @@map("index_rates")
+}
+
+// P25 (Open Finance via Meu Pluggy): one Pluggy item connected by the user (its id is copied by hand from the Pluggy
+// dashboard: the personal plan cannot list items), optionally narrowed to one Pluggy account and the Prumo account it
+// feeds. A row with pluggyAccountId null only registers the item; a Pluggy account without a row is ignored on import.
+// No secret lives here: PLUGGY_CLIENT_ID/PLUGGY_CLIENT_SECRET stay in the environment.
+model OpenFinanceLink {
+  id              String    @id @default(uuid()) @db.Uuid
+  householdId     String    @map("household_id") @db.Uuid
+  pluggyItemId    String    @map("pluggy_item_id") @db.VarChar(64)
+  pluggyAccountId String?   @map("pluggy_account_id") @db.VarChar(64)
+  accountId       String?   @map("account_id") @db.Uuid
+  lastSyncAt      DateTime? @map("last_sync_at") @db.Timestamptz(3)
+  lastError       String?   @map("last_error") @db.VarChar(500)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  account   Account?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@unique([householdId, pluggyAccountId])
+  @@index([householdId, pluggyItemId])
+  @@map("open_finance_links")
 }
