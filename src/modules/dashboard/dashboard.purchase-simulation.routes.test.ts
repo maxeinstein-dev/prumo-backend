@@ -64,6 +64,11 @@ describe('POST /dashboard/purchase-simulation', () => {
     expect(res.json()).toEqual({ success: true, data: sample });
   });
 
+  it('passes my share of a purchase that will be split (1 to 100, up to 2 decimals)', async () => {
+    await post({ householdId: HH, totalAmount: 1200, installments: 12, ownSharePercent: 50 });
+    expect(m.load).toHaveBeenCalledWith(expect.objectContaining({ ownSharePercent: 50 }));
+  });
+
   it('falls back to the personal household', async () => {
     await post({ totalAmount: 1200, installments: 12 });
     expect(m.load).toHaveBeenCalledWith(expect.objectContaining({ householdId: HH }));
@@ -81,6 +86,9 @@ describe('POST /dashboard/purchase-simulation', () => {
       { totalAmount: 0.05, installments: 6 }, // a part would be zero
       { totalAmount: 100, installments: 3, firstMonth: '2026-13' },
       { totalAmount: 100, installments: 3, accountId: 'not-a-uuid' },
+      { totalAmount: 100, installments: 3, ownSharePercent: 0 },
+      { totalAmount: 100, installments: 3, ownSharePercent: 100.5 },
+      { totalAmount: 100, installments: 3, ownSharePercent: 33.333 },
     ]) {
       expect((await post(body)).statusCode, JSON.stringify(body)).toBe(400);
     }

@@ -13,6 +13,9 @@ const store = vi.hoisted(() => ({
   recurrences: [] as Array<Record<string, unknown>>,
   events: [] as Array<Record<string, unknown>>,
   income: new Map<string, number>(),
+  shares: [] as Array<Record<string, unknown>>,
+  recShares: [] as Array<Record<string, unknown>>,
+  persons: [] as Array<Record<string, unknown>>,
 }));
 const decimal = (n: number) => ({ toNumber: () => n, valueOf: () => n });
 const out = (r: Record<string, unknown>) => ({ ...r, amount: decimal(r.amount as number), date: new Date(`${r.date}T00:00:00.000Z`), account: r.accountType ? { type: r.accountType } : null });
@@ -20,7 +23,14 @@ const out = (r: Record<string, unknown>) => ({ ...r, amount: decimal(r.amount as
 vi.mock('../../shared/db/prisma.js', () => ({
   prisma: {
     transaction: { findMany: vi.fn(async (args: { where?: Record<string, unknown> }) => store.transactions.filter((r) => matchesWhere(r as Row, args.where)).map(out)) },
-    transactionShare: { findMany: vi.fn(async () => []) },
+    transactionShare: {
+      findMany: vi.fn(async () => store.shares.map((sh) => {
+        const t = store.transactions.find((r) => r.id === sh.transactionId)!;
+        return { transactionId: sh.transactionId, amount: decimal(sh.amount as number), transaction: { amount: decimal(t.amount as number), categoryName: t.categoryName, isRefund: false } };
+      })),
+    },
+    recurringTransactionShare: { findMany: vi.fn(async () => store.recShares.map((r) => ({ ...r, percent: r.percent == null ? null : decimal(r.percent as number), amount: r.amount == null ? null : decimal(r.amount as number) }))) },
+    person: { findMany: vi.fn(async () => store.persons) },
     account: {
       findMany: vi.fn(async (args: { where?: Record<string, unknown> }) => store.accounts.filter((a) => matchesWhere(a as Row, args.where))),
       findFirst: vi.fn(async (args: { where?: Record<string, unknown> }) => store.accounts.find((a) => matchesWhere(a as Row, args.where)) ?? null),
@@ -58,6 +68,9 @@ beforeEach(() => {
   store.budgets.length = 0;
   store.recurrences.length = 0;
   store.events.length = 0;
+  store.shares.length = 0;
+  store.recShares.length = 0;
+  store.persons.length = 0;
   store.income = new Map();
   store.accounts = [
     { id: 'bank', householdId: HH, isActive: true, type: 'CHECKING', closingDay: null, dueDay: null },
@@ -239,5 +252,58 @@ describe('loadPurchaseSimulation: read only, and the same figures as the dashboa
       expect(row(r, month).postedByCategory).toEqual(Object.fromEntries(o.categoryBreakdown.filter((c) => c.expense > 0).map((c) => [c.name, c.expense])));
     }
     expect(row(r, '2026-11').committedPosted).toBe(390.5);
+  });
+});
+
+describe('loadPurchaseSimulation: only my share counts, like the budgets', () => {
+  it('a purchase I will split counts only my part in the new installment, the total, the leftover and the budgets', async () => {
+    budget(GENERAL_BUDGET_CATEGORY, 2000, { measure: 'OWN_SHARE' });
+    store.income.set('2026-12', 300000); // cents
+    tx({ amount: -1800, date: '2026-12-03', categoryName: 'GROCERIES' });
+    const whole = await sim({ totalAmount: 400, installments: 1, firstMonth: '2026-12' });
+    expect(whole.budgetOverruns).toEqual([expect.objectContaining({ month: '2026-12', scope: 'GENERAL', projected: 2200 })]);
+    const half = await sim({ totalAmount: 400, installments: 1, firstMonth: '2026-12', ownSharePercent: 50 });
+    expect(row(half, '2026-12')).toMatchObject({ newInstallment: 200, total: 2000, leftover: 1000, leftoverWithoutPurchase: 1200 });
+    expect(half.installments).toEqual([400]); // the purchase itself is still 400 on the card
+    expect(half.ownSharePercent).toBe(50);
+    expect(half.budgetOverruns).toEqual([]); // 1800 + 200 = 2000, the limit
+  });
+
+  it('my part of each installment is rounded to the cent and never more than the installment', async () => {
+    const r = await sim({ totalAmount: 100, installments: 3, firstMonth: '2026-12', ownSharePercent: 33.33 });
+    const mine = ['2026-12', '2027-01', '2027-02'].map((m) => row(r, m).newInstallment);
+    expect(mine).toEqual([11.11, 11.11, 11.11]); // 33,34 x 33,33% = 11,11; 33,33 x 33,33% = 11,11
+    expect(r.installments).toEqual([33.34, 33.33, 33.33]);
+  });
+
+  it('an OWN_SHARE budget leaves out what others owe on posted expenses and on the default split of the recurrences', async () => {
+    budget('HOUSING', 1200, { measure: 'OWN_SHARE' });
+    tx({ id: 'split-1', amount: -1000, date: '2026-12-02', categoryName: 'HOUSING' });
+    store.shares.push({ transactionId: 'split-1', amount: 500 });
+    store.recurrences.push({ id: 'rec-1', categoryName: 'HOUSING' });
+    store.events.push({ date: '2026-12-10', amountCents: -60000, sourceId: 'rec-1' });
+    store.recShares.push({ recurringTransactionId: 'rec-1', personId: 'p-1', percent: 50, amount: null });
+    store.persons.push({ id: 'p-1' });
+    // Mine: 500 posted + 300 of the bill + 300 of the purchase = 1100 <= 1200
+    const r = await sim({ totalAmount: 300, installments: 1, firstMonth: '2026-12', categoryName: 'HOUSING' });
+    expect(r.budgetOverruns).toEqual([]);
+    expect(row(r, '2026-12').committed).toBe(1600); // the table still shows what leaves the accounts
+  });
+
+  it('a WHOLE budget keeps counting everything, and the share of a person no longer active stays with me', async () => {
+    budget('HOUSING', 1200);
+    tx({ id: 'split-1', amount: -1000, date: '2026-12-02', categoryName: 'HOUSING' });
+    store.shares.push({ transactionId: 'split-1', amount: 500 });
+    const r = await sim({ totalAmount: 300, installments: 1, firstMonth: '2026-12', categoryName: 'HOUSING' });
+    expect(r.budgetOverruns).toEqual([expect.objectContaining({ scope: 'CATEGORY', projected: 1300, withoutPurchase: 1000 })]);
+
+    store.budgets.length = 0;
+    budget('HOUSING', 1200, { measure: 'OWN_SHARE' });
+    store.recurrences.push({ id: 'rec-1', categoryName: 'HOUSING' });
+    store.events.push({ date: '2026-12-10', amountCents: -60000, sourceId: 'rec-1' });
+    store.recShares.push({ recurringTransactionId: 'rec-1', personId: 'p-gone', percent: 50, amount: null }); // not in persons
+    // Mine: 500 + 600 (the whole bill: the person left) + 300 = 1400 > 1200
+    const r2 = await sim({ totalAmount: 300, installments: 1, firstMonth: '2026-12', categoryName: 'HOUSING' });
+    expect(r2.budgetOverruns).toEqual([expect.objectContaining({ scope: 'CATEGORY', projected: 1400, withoutPurchase: 1100 })]);
   });
 });

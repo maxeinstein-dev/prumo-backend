@@ -35,6 +35,8 @@ export interface SimulationBudget {
   month: Date;
   endMonth?: Date | null;
   limitCents: number;
+  /** WHOLE (default) or OWN_SHARE: an own-share budget is judged on my part only, like the Budgets page. */
+  measure?: string | null;
 }
 
 export interface SimulationInput {
@@ -53,6 +55,12 @@ export interface SimulationInput {
   categoryName?: string;
   /** Total expense of the months of the average (whole cents). */
   averageTotalCents: number;
+  /** What other people owe on the posted expenses, by month, then by category (cents). */
+  theirPostedByMonth?: ReadonlyMap<string, ReadonlyMap<string, number>>;
+  /** The default split of the recurrences not generated yet: the part of other people, by month and category (cents). */
+  theirForecastByMonth?: ReadonlyMap<string, ReadonlyMap<string, number>>;
+  /** My part of the purchase when it will be split (percent, 0 < p <= 100); 100 when not given. */
+  ownSharePercent?: number;
 }
 
 export interface SimulationMonth {
@@ -88,6 +96,8 @@ export interface PurchaseSimulation {
   /** Months with an installment where the purchase takes a budget above its limit. */
   budgetOverruns: BudgetOverrun[];
   averageExpense: { months: number; amount: number };
+  /** My part of the purchase, in percent: the new installment, the total, the leftover and the budgets count only it. */
+  ownSharePercent: number;
 }
 
 const sumOf = (m: ReadonlyMap<string, number> | undefined): number => {
@@ -96,9 +106,20 @@ const sumOf = (m: ReadonlyMap<string, number> | undefined): number => {
   return total;
 };
 const reais = (cents: number): number => cents / 100;
+/** My cents of an installment: rounded to the cent, never more than the installment. */
+const ownPart = (cents: number, percent: number): number => (percent >= 100 ? cents : Math.min(cents, Math.round((cents * percent) / 100)));
 
 /** Pure: the simulation from the already loaded figures. All sums are in whole cents until the very end. */
 export function buildPurchaseSimulation(input: SimulationInput): PurchaseSimulation {
+  const ownPercent = input.ownSharePercent ?? 100;
+  const at = (map: ReadonlyMap<string, ReadonlyMap<string, number>> | undefined, month: string, category?: string): number =>
+    category === undefined ? sumOf(map?.get(month)) : map?.get(month)?.get(category) ?? 0;
+  /** What a budget counts in a month before the purchase: everything, or my part only for an own-share budget. */
+  const baseFor = (budget: SimulationBudget, month: string, category?: string): number => {
+    const whole = at(input.postedByMonth, month, category) + at(input.forecastByMonth, month, category);
+    if (budget.measure !== 'OWN_SHARE') return whole;
+    return whole - at(input.theirPostedByMonth, month, category) - at(input.theirForecastByMonth, month, category);
+  };
   const installmentOf = new Map(installmentMonths(input.firstMonth, input.installmentCents.length).map((m, i) => [m, input.installmentCents[i]!]));
   const months: SimulationMonth[] = [];
   const budgetOverruns: BudgetOverrun[] = [];
@@ -106,7 +127,8 @@ export function buildPurchaseSimulation(input: SimulationInput): PurchaseSimulat
   for (const month of input.months) {
     const posted = sumOf(input.postedByMonth.get(month));
     const forecast = sumOf(input.forecastByMonth.get(month));
-    const installment = installmentOf.get(month) ?? 0;
+    const wholeInstallment = installmentOf.get(month) ?? 0;
+    const installment = ownPart(wholeInstallment, ownPercent);
     const income = input.incomeByMonth.get(month) ?? 0;
     const committed = posted + forecast;
     months.push({
@@ -122,17 +144,22 @@ export function buildPurchaseSimulation(input: SimulationInput): PurchaseSimulat
       leftoverWithoutPurchase: reais(income - committed),
     });
 
-    if (installment === 0) continue;
+    if (wholeInstallment === 0) continue;
+    // An own-share budget counts my part of the purchase; a whole budget counts all of it
+    const added = (budget: SimulationBudget): number => (budget.measure === 'OWN_SHARE' ? installment : wholeInstallment);
     const inForce = pickEffectiveBudgets(input.budgets.filter((b) => b.type === 'EXPENSE'), month);
     const general = inForce.find((b) => b.categoryName === GENERAL_BUDGET_CATEGORY);
-    if (general && committed + installment > general.limitCents) {
-      budgetOverruns.push({ month, scope: 'GENERAL', categoryName: GENERAL_BUDGET_CATEGORY, limit: reais(general.limitCents), projected: reais(committed + installment), withoutPurchase: reais(committed) });
+    if (general) {
+      const base = baseFor(general, month);
+      if (base + added(general) > general.limitCents) {
+        budgetOverruns.push({ month, scope: 'GENERAL', categoryName: GENERAL_BUDGET_CATEGORY, limit: reais(general.limitCents), projected: reais(base + added(general)), withoutPurchase: reais(base) });
+      }
     }
     const own = input.categoryName ? inForce.find((b) => b.categoryName === input.categoryName) : undefined;
     if (own) {
-      const base = (input.postedByMonth.get(month)?.get(own.categoryName) ?? 0) + (input.forecastByMonth.get(month)?.get(own.categoryName) ?? 0);
-      if (base + installment > own.limitCents) {
-        budgetOverruns.push({ month, scope: 'CATEGORY', categoryName: own.categoryName, limit: reais(own.limitCents), projected: reais(base + installment), withoutPurchase: reais(base) });
+      const base = baseFor(own, month, own.categoryName);
+      if (base + added(own) > own.limitCents) {
+        budgetOverruns.push({ month, scope: 'CATEGORY', categoryName: own.categoryName, limit: reais(own.limitCents), projected: reais(base + added(own)), withoutPurchase: reais(base) });
       }
     }
   }
@@ -147,5 +174,6 @@ export function buildPurchaseSimulation(input: SimulationInput): PurchaseSimulat
     tightest: tightest && { month: tightest.month, leftover: tightest.leftover, leftoverWithoutPurchase: tightest.leftoverWithoutPurchase },
     budgetOverruns,
     averageExpense: { months: AVERAGE_MONTHS, amount: reais(Math.round(input.averageTotalCents / AVERAGE_MONTHS)) },
+    ownSharePercent: ownPercent,
   };
 }

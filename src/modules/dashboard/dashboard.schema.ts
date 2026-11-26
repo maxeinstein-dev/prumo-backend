@@ -157,6 +157,8 @@ export const purchaseSimulationBodySchema = z
     firstMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'firstMonth must be YYYY-MM').optional(),
     accountId: z.string().uuid().optional(),
     categoryName: z.string().min(1).max(60).optional(),
+    // My part of a purchase that will be split with someone (percent, up to 2 decimals): only it counts
+    ownSharePercent: z.number().gt(0).max(100).refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-9, 'ownSharePercent takes at most 2 decimals').optional(),
   })
   .refine((b) => Math.abs(b.totalAmount * 100 - Math.round(b.totalAmount * 100)) < 1e-6, { message: 'totalAmount must have at most 2 decimal places', path: ['totalAmount'] })
   .refine((b) => Math.round(b.totalAmount * 100) >= b.installments, { message: 'totalAmount is too small for that many installments', path: ['totalAmount'] });

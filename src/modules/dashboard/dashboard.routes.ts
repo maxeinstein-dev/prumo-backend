@@ -521,6 +521,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       ...(body.accountId && { accountId: body.accountId }),
       ...(body.categoryName && { categoryName: body.categoryName }),
       ...(body.firstMonth && { firstMonth: body.firstMonth }),
+      ...(body.ownSharePercent !== undefined && { ownSharePercent: body.ownSharePercent }),
     });
     return reply.send({ success: true, data });
   });
