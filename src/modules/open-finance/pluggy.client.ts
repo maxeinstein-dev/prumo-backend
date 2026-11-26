@@ -66,6 +66,8 @@ export interface PluggyTransaction {
 }
 
 export interface PluggyClient {
+  /** Trades the keys for an API key: 'refused' when Pluggy turns them down (e.g. CLIENT_SECRET_EXPIRED). */
+  checkCredentials(): Promise<'ok' | 'refused'>;
   listAccounts(itemId: string): Promise<PluggyAccount[]>;
   /** `from` and `to` are 'YYYY-MM-DD', both inclusive. */
   listTransactions(accountId: string, range: { from: string; to: string }): Promise<PluggyTransaction[]>;
@@ -199,6 +201,16 @@ export function createPluggyClient(options: PluggyOptions): PluggyClient {
   }
 
   return {
+    async checkCredentials() {
+      try {
+        await getApiKey();
+        return 'ok';
+      } catch (error) {
+        if (error instanceof PluggyError && error.kind === 'auth') return 'refused';
+        throw error;
+      }
+    },
+
     async listAccounts(itemId) {
       const accounts: PluggyAccount[] = [];
       for (let page = 1; page <= maxPages; page++) {

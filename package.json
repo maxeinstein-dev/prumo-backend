@@ -12,6 +12,7 @@
     "start:cron": "node dist/jobs/processRecurrences.js",
     "cron:process-recurrences": "node dist/jobs/processRecurrences.js",
     "cron:refresh-investments": "node dist/jobs/refreshInvestments.js",
+    "cron:check-pluggy-secret": "node dist/jobs/checkPluggySecret.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
