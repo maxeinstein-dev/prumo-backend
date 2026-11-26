@@ -57,8 +57,7 @@ const ALLOWED: Record<string, { counts: Partial<Counts>; why: string }> = {
   'src/modules/transactions/transactions.service.ts': { counts: { setHours: 4, localDate: 1 }, why: 'recurrence generation normalizes dates to local midnight; one daysInMonth count' },
   'src/modules/transactions/maxfin-import.helpers.ts': { counts: { localDate: 4 }, why: 'parse sheet days to local midnight (writes) and count days of a month' },
   'src/modules/transactions/parsers/maxfin.parser.ts': { counts: { localDate: 2 }, why: 'parsed row dates, local midnight like the other parsers' },
-  'src/modules/transactions/parsers/csv.parser.ts': { counts: { localDate: 1 }, why: 'parsed row date at local time (stored through the driver, never a bound)' },
-  'src/modules/transactions/parsers/ofx.parser.ts': { counts: { localDate: 1 }, why: 'parsed row date at local time (stored through the driver, never a bound)' },
+  'src/modules/transactions/parsers/ofx.parser.ts': { counts: { localDate: 1 }, why: 'parseOfxDate, kept for the card invoice parser (a parsed date, never a bound); the statement importer reads days as UTC' },
   'src/shared/utils/date.ts': { counts: { localDate: 1 }, why: 'createDate factory (local)' },
   'src/shared/utils/dateSchema.ts': { counts: { localDate: 4 }, why: 'localDateSchema: YYYY-MM-DD becomes the local-midnight value the app writes' },
 };

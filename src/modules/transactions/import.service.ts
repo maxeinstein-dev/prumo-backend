@@ -1,13 +1,17 @@
 import { Prisma } from '../../generated/prisma/client.js';
 import { prisma } from '../../shared/db/prisma.js';
-import { BadRequestError } from '../../shared/errors/app-error.js';
+import { BadRequestError, ConflictError } from '../../shared/errors/app-error.js';
 import { AccountType, CategoryName, TransactionType } from '../../shared/enums/index.js';
-import { parseCsv, type ParsedRow } from './parsers/csv.parser.js';
+import { parseCsvStatement } from './parsers/csv.parser.js';
 import { isCardStatementOfx } from './parsers/ofx-card.parser.js';
-import { parseOfx } from './parsers/ofx.parser.js';
+import { parseOfxStatement } from './parsers/ofx.parser.js';
+import { decodeStatement, type ParsedRow, type ParseResult, type SkippedRow } from './parsers/statement.common.js';
 import { createTransaction } from './transactions.service.js';
 
 export type { ParsedRow };
+
+/** The preview lists at most this many skipped lines; `skippedCount` always has the real total. */
+const MAX_LISTED_SKIPPED = 100;
 
 export interface ImportPreviewRow extends ParsedRow {
   index: number;
@@ -19,6 +23,9 @@ export interface ImportPreview {
   total: number;
   duplicateCount: number;
   newCount: number;
+  /** Lines of the file that could not be read, with the reason, so nothing disappears silently. */
+  skipped: SkippedRow[];
+  skippedCount: number;
 }
 
 export interface ConfirmImportResult {
@@ -54,9 +61,9 @@ export function amountsEqual(a: number, b: number, tolerance = AMOUNT_TOLERANCE)
 
 /**
  * Parse an uploaded statement file. Selects the parser by extension.
- * @throws BadRequestError (400) for unsupported extensions or empty/unreadable content.
+ * @throws BadRequestError (400) for unsupported extensions or a CSV header that names no columns.
  */
-export function parseImportBuffer(filename: string, buffer: Buffer): ParsedRow[] {
+export function parseImportBuffer(filename: string, buffer: Buffer): ParseResult {
   const dot = filename.lastIndexOf('.');
   const ext = dot >= 0 ? filename.slice(dot).toLowerCase() : '';
 
@@ -66,14 +73,14 @@ export function parseImportBuffer(filename: string, buffer: Buffer): ParsedRow[]
     );
   }
 
-  const text = buffer.toString('utf-8');
-  const rows = ext === '.ofx' ? parseOfx(text) : parseCsv(text);
+  const text = decodeStatement(buffer);
+  const parsed = ext === '.ofx' ? parseOfxStatement(text) : parseCsvStatement(text);
 
-  if (rows.length === 0) {
+  if (parsed.rows.length === 0 && parsed.skipped.length === 0) {
     throw new BadRequestError('No readable transactions found in the file.');
   }
 
-  return rows;
+  return parsed;
 }
 
 /**
@@ -91,66 +98,87 @@ export function assertNotCardInvoice(accountType: string, filename: string, buff
   );
 }
 
+const dayKey = (date: Date) => date.toISOString().slice(0, 10);
+
+/** Two rows are "the same transaction" when type, day, amount in cents and description match. */
+function rowKey(type: string, date: Date, amount: number | Prisma.Decimal, description: string | null): string {
+  const cents = Math.round(Number(amount) * 100);
+  return `${type}|${dayKey(date)}|${cents}|${description ?? ''}`;
+}
+
 /**
- * True when a transaction with the same household + account + day +
- * amount + description already exists. Amount compares via Prisma.Decimal
- * exact equality (scale-insensitive numeric match in Postgres); the day
- * window neutralizes the time component (@db.Date stores day precision).
+ * Which rows already exist on the account, comparing by occurrence: when the file holds the same row three times and
+ * the account already has two of it, the first two are duplicates and the third is new. Comparing only "does one
+ * exist" would drop the second of two identical purchases (two coffees on the same day) without a word.
+ * One query for the whole file. Preview and confirm both use it, so they always agree.
  */
-export async function isDuplicateRow(
+export async function flagDuplicates(
   accountId: string,
   householdId: string,
-  row: ParsedRow,
-): Promise<boolean> {
-  const { start, end } = getDayRange(row.date);
-  const existing = await prisma.transaction.findFirst({
-    where: {
-      householdId,
-      accountId,
-      description: row.description,
-      amount: new Prisma.Decimal(row.amount),
-      date: { gte: start, lte: end },
-    },
-    select: { id: true },
+  rows: ParsedRow[],
+): Promise<boolean[]> {
+  if (rows.length === 0) return [];
+  let min = rows[0]!.date;
+  let max = rows[0]!.date;
+  for (const row of rows) {
+    if (row.date < min) min = row.date;
+    if (row.date > max) max = row.date;
+  }
+
+  const existing = await prisma.transaction.findMany({
+    where: { householdId, accountId, date: { gte: min, lte: max }, type: { in: ['INCOME', 'EXPENSE'] } },
+    select: { type: true, date: true, amount: true, description: true },
   });
-  return existing !== null;
+  const stored = new Map<string, number>();
+  for (const tx of existing) {
+    const key = rowKey(tx.type, tx.date, tx.amount, tx.description);
+    stored.set(key, (stored.get(key) ?? 0) + 1);
+  }
+
+  const seen = new Map<string, number>();
+  return rows.map((row) => {
+    const key = rowKey(row.type, row.date, row.amount, row.description);
+    const occurrence = (seen.get(key) ?? 0) + 1;
+    seen.set(key, occurrence);
+    return occurrence <= (stored.get(key) ?? 0);
+  });
 }
 
 export async function buildImportPreview(
   accountId: string,
   householdId: string,
-  rows: ParsedRow[],
+  parsed: ParseResult,
 ): Promise<ImportPreview> {
-  const preview: ImportPreviewRow[] = [];
-  for (let index = 0; index < rows.length; index++) {
-    const row = rows[index] as ParsedRow;
-    preview.push({
-      date: new Date(row.date),
-      description: row.description,
-      amount: row.amount,
-      type: row.type,
-      index,
-      duplicate: await isDuplicateRow(accountId, householdId, row),
-    });
-  }
-  const duplicateCount = preview.filter((r) => r.duplicate).length;
+  const flags = await flagDuplicates(accountId, householdId, parsed.rows);
+  const rows: ImportPreviewRow[] = parsed.rows.map((row, index) => ({
+    ...row,
+    index,
+    duplicate: flags[index] === true,
+  }));
+  const duplicateCount = flags.filter(Boolean).length;
   return {
-    rows: preview,
-    total: preview.length,
+    rows,
+    total: rows.length,
     duplicateCount,
-    newCount: preview.length - duplicateCount,
+    newCount: rows.length - duplicateCount,
+    skipped: parsed.skipped.slice(0, MAX_LISTED_SKIPPED),
+    skippedCount: parsed.skipped.length,
   };
 }
 
 /**
- * Persist non-duplicate rows, revalidating each one against the DB
- * (the preview is not trusted: rows may have been imported since).
- * Each row goes through the existing createTransaction, which owns its
- * own transaction and updates the account balance — so this loops
- * sequentially instead of wrapping everything in an outer
- * prisma.$transaction (an outer interactive transaction would be a no-op:
- * createTransaction queries via the global prisma client, not the tx
- * handle, and would neither join it nor roll back with it).
+ * Persist the rows that are not already on the account. Send the whole file, duplicates included: the rows already on
+ * the account are found with the same rule as the preview (by occurrence), which only gives the preview's answer when
+ * it sees the same list.
+ *
+ * A per-account advisory lock serialises confirms: two requests with the same file (a double click, or a retry after
+ * the browser gave up waiting) cannot both see "not there yet" and import it twice. The lock lives in a transaction
+ * that does nothing else, because createTransaction owns its own database transaction (and balance update) on another
+ * connection and cannot join this one. The lock is only tried, never waited for: a waiting request would hold a pool
+ * connection for the whole import ahead of it. A second confirm on the same account gets 409 right away instead.
+ *
+ * The rows are not atomic: if one fails, the rows before it stay saved and the error is thrown; sending the same file
+ * again continues from there, because the saved rows now count as duplicates.
  */
 export async function confirmImport(
   accountId: string,
@@ -158,33 +186,41 @@ export async function confirmImport(
   rows: ParsedRow[],
   userId?: string,
 ): Promise<ConfirmImportResult> {
-  const ids: string[] = [];
-  let imported = 0;
-  let skipped = 0;
+  return prisma.$transaction(
+    async (lock) => {
+      const [{ locked }] = await lock.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_xact_lock(hashtext(${`statement-import:${accountId}`})) AS locked`;
+      if (!locked) throw new ConflictError('An import is already running for this account.');
 
-  for (const row of rows) {
-    if (await isDuplicateRow(accountId, householdId, row)) {
-      skipped += 1;
-      continue;
-    }
-    const created = await createTransaction(
-      {
-        householdId,
-        accountId,
-        type: row.type === 'INCOME' ? TransactionType.INCOME : TransactionType.EXPENSE,
-        categoryName:
-          row.type === 'INCOME' ? CategoryName.OTHER_INCOME : CategoryName.OTHER_EXPENSES,
-        amount: row.amount,
-        description: row.description,
-        date: row.date,
-        paid: true,
-        isSplit: false,
-      },
-      userId,
-    );
-    ids.push(created.id);
-    imported += 1;
-  }
+      const flags = await flagDuplicates(accountId, householdId, rows);
+      const ids: string[] = [];
+      let skipped = 0;
 
-  return { imported, skipped, ids };
+      for (let index = 0; index < rows.length; index++) {
+        const row = rows[index] as ParsedRow;
+        if (flags[index]) {
+          skipped += 1;
+          continue;
+        }
+        const created = await createTransaction(
+          {
+            householdId,
+            accountId,
+            type: row.type === 'INCOME' ? TransactionType.INCOME : TransactionType.EXPENSE,
+            categoryName: row.type === 'INCOME' ? CategoryName.OTHER_INCOME : CategoryName.OTHER_EXPENSES,
+            amount: row.amount,
+            description: row.description,
+            date: row.date,
+            paid: true,
+            isSplit: false,
+          },
+          userId,
+        );
+        ids.push(created.id);
+      }
+
+      return { imported: ids.length, skipped, ids };
+    },
+    // The loop can run for minutes on a large file; the default 5 s would abort it midway.
+    { timeout: 10 * 60 * 1000, maxWait: 30 * 1000 },
+  );
 }

@@ -215,10 +215,17 @@ Three importers live under `/transactions/import`. All require authentication an
 
 | Endpoint | Body | Notes |
 |---|---|---|
-| `POST /transactions/import/preview` | multipart: `accountId`, `file` (.ofx or .csv) | Returns parsed rows flagged as duplicate when an identical transaction (account, day, amount, description) already exists. |
-| `POST /transactions/import/confirm` | JSON: `{ accountId, rows: [{ date, description, amount, type }] }` | Creates the rows through the regular transaction service (balances are updated); duplicates are re-checked and skipped. |
+| `POST /transactions/import/preview` | multipart: `accountId`, `file` (.ofx or .csv) | Returns parsed rows flagged as duplicate when the account already holds the same transaction (type, day, amount, description), and `skipped`/`skippedCount`: the lines it could not read, each with a reason (`invalid-date`, `invalid-amount`, `ambiguous-amount`, `column-count`). |
+| `POST /transactions/import/confirm` | JSON: `{ accountId, rows: [{ date, description, amount, type }] }` | Creates the rows through the regular transaction service (balances are updated); duplicates are re-checked and skipped. Send every row of the file, duplicates included. One confirm per account at a time: a second one answers 409 right away. |
 
-The CSV flavour expects `date;description;amount` (`,` also accepted as delimiter), dates as `dd/MM/yyyy` or `yyyy-MM-dd`, and Brazilian or plain decimal amounts. Negative amounts become expenses.
+The CSV flavour expects date, description and amount, with `;` or `,` as delimiter (quote a cell that contains it), dates as `dd/MM/yyyy`, `dd-MM-yyyy` or `yyyy-MM-dd`, and negative amounts as expenses. A header row, when present, names the columns (`data`, `descricao`/`historico`, `valor`, or `date`, `description`, `amount`) in any order and extra columns are ignored; without names the file must have exactly the three columns, and a line with another count is reported instead of gluing the extra column to the amount. An amount with both separators is read by the last one (`1.234,56`, `1,234.50`), one separator followed by one or two digits is the decimal mark, and one followed by three digits (`1.234`) is refused as ambiguous. Files are read as UTF-8 and, when the bytes are not valid UTF-8, as Windows-1252; the memo of an OFX has its XML entities decoded (`AT&amp;T`).
+
+Rules the two steps share:
+
+- **Day, not instant.** Only the calendar day printed in the file counts, stored as that day whatever the server's time zone (`DTPOSTED` 20261105235959 is 5 November).
+- **Identical rows are matched by occurrence.** Two identical rows in one file (two coffees on the same day) are two transactions. Against the account, the Nth identical row is a duplicate only when the account already holds N of it, so reimporting a file adds nothing, and a file with three and an account with one adds two. Preview and confirm use the same function, which is why the confirm has to receive the whole list.
+- **One confirm at a time per account.** A per-account advisory lock is tried, never waited for; a confirm that finds it taken answers 409 (a double click or a retry after a timeout does not import the file twice).
+- Rows are saved one by one, so a failure in the middle leaves the earlier rows saved; run the preview again (they show as duplicates) and confirm the rest.
 
 A credit card invoice (an OFX holding `CCSTMTRS`) sent to a `CREDIT` account is refused with a 400 that points to the card importer below: stored as raw rows it would duplicate the purchases the monthly sheet already put on the card.
 

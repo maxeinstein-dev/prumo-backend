@@ -42,6 +42,14 @@ const previewRowSchema = {
   },
 } as const;
 
+const skippedRowSchema = {
+  type: 'object',
+  properties: {
+    line: { type: 'number' },
+    reason: { type: 'string' },
+  },
+} as const;
+
 const confirmImportBodySchema = z.object({
   accountId: z.string().uuid(),
   rows: z.array(
@@ -66,7 +74,7 @@ export async function importRoutes(app: FastifyInstance) {
   app.post('/import/preview', {
     schema: {
       description:
-        'Preview a bank statement import (multipart/form-data only: text field `accountId` + file field `file` with a .ofx or .csv file, max 5MB). Returns parsed rows flagged as duplicate/new. A credit card invoice OFX (CCSTMTRS) sent to a CREDIT account answers 400 pointing to POST /transactions/import/card-ofx/preview. Requires EDITOR+ on the account household.',
+        'Preview a bank statement import (multipart/form-data only: text field `accountId` + file field `file` with a .ofx or .csv file, max 5MB). Returns parsed rows flagged as duplicate/new (identical rows are matched by occurrence: the Nth copy is a duplicate only when the account already holds N) and the lines that could not be read (`skipped`, each with a reason). A credit card invoice OFX (CCSTMTRS) sent to a CREDIT account answers 400 pointing to POST /transactions/import/card-ofx/preview. Requires EDITOR+ on the account household.',
       tags: ['Transactions'],
       security: [{ bearerAuth: [] }],
       consumes: ['multipart/form-data'],
@@ -82,6 +90,8 @@ export async function importRoutes(app: FastifyInstance) {
                 total: { type: 'number' },
                 duplicateCount: { type: 'number' },
                 newCount: { type: 'number' },
+                skipped: { type: 'array', items: skippedRowSchema },
+                skippedCount: { type: 'number' },
               },
             },
           },
@@ -125,8 +135,8 @@ export async function importRoutes(app: FastifyInstance) {
     // A card invoice on a card goes to the card importer, which reconciles instead of duplicating.
     assertNotCardInvoice(account.type, filename, buffer);
 
-    const rows = parseImportBuffer(filename, buffer);
-    const preview = await buildImportPreview(accountId, account.householdId, rows);
+    const parsed = parseImportBuffer(filename, buffer);
+    const preview = await buildImportPreview(accountId, account.householdId, parsed);
 
     return reply.send({ success: true, data: preview });
   });
@@ -139,7 +149,7 @@ export async function importRoutes(app: FastifyInstance) {
   app.post('/import/confirm', {
     schema: {
       description:
-        'Confirm a bank statement import (application/json only: { accountId, rows: [{ date, description, amount, type }] }). Re-validates duplicates at write time; duplicates are skipped. Requires EDITOR+ on the account household.',
+        'Confirm a bank statement import (application/json only: { accountId, rows: [{ date, description, amount, type }] }). Send every row of the file, duplicates included: duplicates are found again at write time with the same rule as the preview (by occurrence) and skipped. A second confirm on the same account while one runs answers 409. Requires EDITOR+ on the account household.',
       tags: ['Transactions'],
       security: [{ bearerAuth: [] }],
       body: {
@@ -180,6 +190,7 @@ export async function importRoutes(app: FastifyInstance) {
         400: errorResponseSchema,
         403: errorResponseSchema,
         404: errorResponseSchema,
+        409: errorResponseSchema,
       },
     },
   }, async (request, reply) => {

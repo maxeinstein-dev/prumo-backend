@@ -1,104 +1,137 @@
-export interface ParsedRow {
-  date: Date;
-  description: string;
-  amount: number;
-  type: 'INCOME' | 'EXPENSE';
-}
+import { BadRequestError } from '../../../shared/errors/app-error.js';
+import {
+  buildUtcDate,
+  parseAmountText,
+  toRow,
+  type ParseResult,
+  type ParsedRow,
+  type SkipReason,
+} from './statement.common.js';
 
-function buildDate(
-  year: number,
-  month: number,
-  day: number,
-  hour = 0,
-  minute = 0,
-  second = 0,
-): Date | null {
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  if (hour > 23 || minute > 59 || second > 59) return null;
-  const date = new Date(year, month - 1, day, hour, minute, second);
-  if (
-    date.getFullYear() !== year ||
-    date.getMonth() !== month - 1 ||
-    date.getDate() !== day
-  ) {
-    return null;
+export type { ParsedRow };
+
+/** What a row without a description is called (an empty description is not accepted when the rows are confirmed). */
+export const CSV_DEFAULT_DESCRIPTION = 'Importação CSV';
+
+type Column = 'date' | 'description' | 'amount';
+
+// Header names are compared lower-case and without accents.
+const HEADER_ALIASES: Record<Column, string[]> = {
+  date: ['date', 'data', 'dt', 'data lancamento', 'posted'],
+  description: ['description', 'descricao', 'historico', 'memo', 'lancamento', 'details', 'detalhes'],
+  amount: ['amount', 'valor', 'value', 'montante'],
+};
+const COLUMNS = Object.keys(HEADER_ALIASES) as Column[];
+
+const normalizeHeader = (cell: string) =>
+  cell
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim();
+
+/** Splits one line, honouring double quotes so `"1.234,56"` or `"Smith, John"` stay in one cell. */
+function splitLine(line: string, delimiter: string): string[] {
+  const cells: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i] as string;
+    if (quoted) {
+      if (char === '"' && line[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        cell += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === delimiter) {
+      cells.push(cell);
+      cell = '';
+    } else {
+      cell += char;
+    }
   }
-  return date;
+  cells.push(cell);
+  return cells;
 }
 
+/** `dd/MM/yyyy`, `dd-MM-yyyy` or `yyyy-MM-dd`, optionally followed by a time that is ignored. */
 function parseCsvDate(raw: string): Date | null {
-  const value = raw.trim();
-  let match: RegExpMatchArray | null;
-
-  if (
-    (match = value.match(/^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})$/))
-  ) {
-    return buildDate(
-      Number(match[3]),
-      Number(match[2]),
-      Number(match[1]),
-      Number(match[4]),
-      Number(match[5]),
-      Number(match[6]),
-    );
-  }
-  if ((match = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/))) {
-    return buildDate(Number(match[3]), Number(match[2]), Number(match[1]));
-  }
-  if ((match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/))) {
-    return buildDate(Number(match[1]), Number(match[2]), Number(match[3]));
-  }
-  if ((match = value.match(/^(\d{2})-(\d{2})-(\d{4})$/))) {
-    return buildDate(Number(match[3]), Number(match[2]), Number(match[1]));
-  }
-  return null;
+  const value = raw.trim().replace(/[ T]\d{1,2}:\d{2}(:\d{2})?(\.\d+)?Z?$/, '');
+  const dayFirst = /^(\d{2})[/-](\d{2})[/-](\d{4})$/.exec(value);
+  if (dayFirst) return buildUtcDate(Number(dayFirst[3]), Number(dayFirst[2]), Number(dayFirst[1]));
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return iso ? buildUtcDate(Number(iso[1]), Number(iso[2]), Number(iso[3])) : null;
 }
 
-function parseAmount(raw: string): number | null {
-  const value = raw.trim();
-  if (value.length === 0) return null;
-  // Brazilian format uses '.' as thousands separator and ',' as decimal mark.
-  // Only strip dots when a comma is present; otherwise parse as-is so that
-  // plain "1234.56" is not mangled into "123456".
-  const normalized = value.includes(',')
-    ? value.replace(/\./g, '').replace(/,/g, '.')
-    : value;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
+/** Looks like money, valid or not: used only to tell a header from a data line with a bad cell. */
+const looksNumeric = (cell: string) => /\d/.test(cell) && /^[\s\-+()R$\d.,]+$/.test(cell);
 
-export function parseCsv(text: string): ParsedRow[] {
-  const rows: ParsedRow[] = [];
+/**
+ * The rows of a bank statement CSV, with the lines that could not be read and why. The header, when there is one,
+ * names the columns (any order, extra columns ignored); without it the file has exactly date, description and amount.
+ */
+export function parseCsvStatement(text: string): ParseResult {
+  const result: ParseResult = { rows: [], skipped: [] };
   const lines = text.split(/\r?\n/);
+  const first = lines.findIndex((line) => line.trim().length > 0);
+  if (first < 0) return result;
 
-  // Skip header (first line), mirroring the reference implementation.
-  for (let i = 1; i < lines.length; i++) {
-    const line = (lines[i] as string).trim();
-    if (line.length === 0) continue;
+  const delimiter = (lines[first] as string).includes(';') ? ';' : ',';
+  const firstCells = splitLine(lines[first] as string, delimiter);
 
-    const parts = line.split(/[;,]/);
-    if (parts.length < 3) continue;
+  // The header is optional: a first line that holds a date or a number is already data.
+  const hasHeader = parseCsvDate(firstCells[0] ?? '') === null && !firstCells.some(looksNumeric);
+  let columns: Record<Column, number> = { date: 0, description: 1, amount: 2 };
+  let exactCells: number | null = 3;
 
-    const dateRaw = (parts[0] as string).trim();
-    const description = (parts[1] as string).trim();
-    // Rejoin leftover columns: a Brazilian amount such as "1.234,56"
-    // contains a ',' separator, so it splits into two columns.
-    const amountRaw = parts
-      .slice(2)
-      .join(',')
-      .trim();
-
-    const date = parseCsvDate(dateRaw);
-    const rawAmount = parseAmount(amountRaw);
-    if (date === null || rawAmount === null) continue;
-
-    rows.push({
-      date,
-      description,
-      amount: Math.abs(rawAmount),
-      type: rawAmount >= 0 ? 'INCOME' : 'EXPENSE',
-    });
+  if (hasHeader) {
+    const names = firstCells.map(normalizeHeader);
+    const found = COLUMNS.map((column) => names.findIndex((name) => HEADER_ALIASES[column].includes(name)));
+    if (found.every((index) => index >= 0)) {
+      columns = { date: found[0] as number, description: found[1] as number, amount: found[2] as number };
+      exactCells = null; // columns chosen by name: extra columns after the amount are not part of the value
+    } else if (firstCells.length !== 3) {
+      throw new BadRequestError(
+        'The CSV header must name the date, description and amount columns (for example "Date;Description;Amount").',
+      );
+    }
   }
 
-  return rows;
+  const needed = Math.max(columns.date, columns.description, columns.amount) + 1;
+
+  for (let index = hasHeader ? first + 1 : first; index < lines.length; index++) {
+    const line = (lines[index] as string).trim();
+    if (line.length === 0) continue;
+    const skip = (reason: SkipReason) => result.skipped.push({ line: index + 1, reason });
+
+    const cells = splitLine(line, delimiter);
+    if (cells.length < needed || (exactCells !== null && cells.length !== exactCells)) {
+      skip('column-count');
+      continue;
+    }
+
+    const date = parseCsvDate(cells[columns.date] as string);
+    if (date === null) {
+      skip('invalid-date');
+      continue;
+    }
+    const amount = parseAmountText(cells[columns.amount] as string);
+    if ('error' in amount) {
+      skip(amount.error);
+      continue;
+    }
+    result.rows.push(toRow(date, (cells[columns.description] ?? '').trim() || CSV_DEFAULT_DESCRIPTION, amount.cents, amount.negative));
+  }
+
+  return result;
+}
+
+/** The rows alone, for callers that do not need the skipped lines. */
+export function parseCsv(text: string): ParsedRow[] {
+  return parseCsvStatement(text).rows;
 }

@@ -1,9 +1,16 @@
-export interface ParsedRow {
-  date: Date;
-  description: string;
-  amount: number;
-  type: 'INCOME' | 'EXPENSE';
-}
+import {
+  buildUtcDate,
+  decodeEntities,
+  MAX_CENTS,
+  parseAmountText,
+  toRow,
+  type AmountResult,
+  type ParseResult,
+  type ParsedRow,
+  type SkippedRow,
+} from './statement.common.js';
+
+export type { ParsedRow };
 
 export const OFX_DEFAULT_DESCRIPTION = 'Importação OFX';
 
@@ -67,31 +74,53 @@ export function parseOfxDate(raw: string): Date | null {
   return null;
 }
 
-export function parseOfx(text: string): ParsedRow[] {
-  const rows: ParsedRow[] = [];
+/** `YYYYMMDD[HHMMSS[.XXX]][offset]`: only the calendar day the bank printed is kept, at 00:00 UTC. */
+function parseOfxDay(raw: string): Date | null {
+  const match = /^(\d{4})(\d{2})(\d{2})/.exec(raw.trim());
+  return match ? buildUtcDate(Number(match[1]), Number(match[2]), Number(match[3])) : null;
+}
+
+/**
+ * OFX amounts use `.` as the decimal mark by the spec, so a plain `-1.234` is 1.234 here (unlike in a CSV, where it
+ * is ambiguous). Anything else, such as a bank that prints `,`, goes through the strict amount rules.
+ */
+function parseOfxAmount(raw: string): AmountResult {
+  const plain = /^([+-]?)(\d+(?:\.\d+)?)$/.exec(raw);
+  if (!plain) return parseAmountText(raw);
+  const cents = Math.round(Number(plain[2]) * 100);
+  return cents > 0 && cents <= MAX_CENTS ? { cents, negative: plain[1] === '-' } : { error: 'invalid-amount' };
+}
+
+/**
+ * The entries of a bank statement, with the ones that could not be read and why. Dates keep the day the bank printed
+ * (00:00 UTC); the memo has its XML entities decoded.
+ */
+export function parseOfxStatement(text: string): ParseResult {
+  const result: ParseResult = { rows: [], skipped: [] };
   const blocks = text.split('<STMTTRN>');
 
   for (let i = 1; i < blocks.length; i++) {
     const block = blocks[i] as string;
+    const skip = (reason: SkippedRow['reason']) => result.skipped.push({ line: i, reason });
 
-    const amountRaw = extract(TRNAMT_REGEX, block);
-    const dateRaw = extract(DTPOSTED_REGEX, block);
-    if (amountRaw === null || dateRaw === null) continue;
-
-    const rawAmount = Number(amountRaw.replace(',', '.'));
-    if (!Number.isFinite(rawAmount)) continue;
-
-    const date = parseOfxDate(dateRaw);
-    if (date === null) continue;
-
+    const date = parseOfxDay(extract(DTPOSTED_REGEX, block) ?? '');
+    if (date === null) {
+      skip('invalid-date');
+      continue;
+    }
+    const amount = parseOfxAmount(extract(TRNAMT_REGEX, block) ?? '');
+    if ('error' in amount) {
+      skip(amount.error);
+      continue;
+    }
     const memo = extract(MEMO_REGEX, block);
-    rows.push({
-      date,
-      description: memo ?? OFX_DEFAULT_DESCRIPTION,
-      amount: Math.abs(rawAmount),
-      type: rawAmount >= 0 ? 'INCOME' : 'EXPENSE',
-    });
+    result.rows.push(toRow(date, (memo !== null ? decodeEntities(memo).trim() : '') || OFX_DEFAULT_DESCRIPTION, amount.cents, amount.negative));
   }
 
-  return rows;
+  return result;
+}
+
+/** The rows alone, for callers that do not need the skipped lines. */
+export function parseOfx(text: string): ParsedRow[] {
+  return parseOfxStatement(text).rows;
 }
