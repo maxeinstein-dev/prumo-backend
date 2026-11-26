@@ -15,6 +15,7 @@ import { lockCustomCategory } from '../../shared/utils/categoryLock.js';
 import { monthOrRangeWhere, effectiveMonthWhere, addMonths, competenceWithinRange } from '../../shared/utils/competence.js';
 import { executeRecurringTransaction } from '../recurring-transactions/recurring-transactions.service.js';
 import { invoicePaymentColumnsFromTag } from './invoice-payment-link.js';
+import { isInvestmentContribution } from '../budgets/budget-spending.js';
 import { applyTransfer, applyAllocation, applyDeallocation, recalculateCreditCardLimit, updateBalanceForNormalTransaction } from '../../shared/services/balance.service.js';
 import type {
   CreateTransactionInput,
@@ -1985,10 +1986,13 @@ export async function createTransfer(
     notes?: string;
     /** Unique per household: a second transfer with the same reference fails with P2002 (used by the captures). */
     sourceRef?: string;
+    /** TRANSFER when left out. An aporte counts in the budget of this category (P24, see budget-spending.ts). */
+    categoryName?: string;
   },
   hooks: { inTransaction?: (tx: Prisma.TransactionClient, created: { id: string }) => Promise<void> } = {},
 ) {
   const { householdId, fromAccountId, toAccountId, amount, description, date, notes, sourceRef } = input;
+  const categoryName = input.categoryName || CategoryName.TRANSFER;
 
   if (fromAccountId === toAccountId) {
     throw new BadRequestError('Cannot transfer to the same account');
@@ -2026,6 +2030,10 @@ export async function createTransfer(
 
   // Create transfer transaction and update balances
   const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    // A custom category must be one of the household's expense categories (an aporte is spending, not income)
+    if ((await lockCustomCategory(tx, householdId, categoryName)) === 'INCOME') {
+      throw new BadRequestError('The category of a transfer must be an expense category');
+    }
     // Apply transfer (updates available_balance only)
     await applyTransfer(tx, fromAccountId, toAccountId, amount);
 
@@ -2035,7 +2043,7 @@ export async function createTransfer(
       data: {
         householdId,
         type: TransactionType.TRANSFER,
-        categoryName: CategoryName.TRANSFER,
+        categoryName,
         fromAccountId,
         toAccountId,
         amount: new Prisma.Decimal(amount),
@@ -2060,6 +2068,16 @@ export async function createTransfer(
 
     return transaction;
   });
+
+  // An aporte is spending of its budgets (P24): the same alerts an expense gets, and never one for other transfers
+  if (isInvestmentContribution({ type: TransactionType.TRANSFER, fromAccount, toAccount })) {
+    try {
+      const { checkBudgetThresholds } = await import('../notifications/budget-notifications.service.js');
+      await checkBudgetThresholds(householdId, categoryName, date, amount, 'EXPENSE', null);
+    } catch (error) {
+      console.error('[createTransfer] Error checking budget thresholds:', error);
+    }
+  }
 
   // Convert Prisma.Decimal to number for JSON serialization
   return {

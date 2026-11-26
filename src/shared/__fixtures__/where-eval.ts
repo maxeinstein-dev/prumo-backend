@@ -1,8 +1,8 @@
 /**
- * Tiny evaluator of the Prisma `where` shapes the month filters build (AND / OR / NOT, equality, null, in, gte / lte,
- * contains, startsWith), over rows whose `date` is a 'YYYY-MM-DD' string. A Date bound is read by its UTC calendar day, which is
- * what the driver does with a bound on a `@db.Date` column (it sends the UTC date part), so a bound that is not built
- * as a UTC-midnight day is judged here exactly as the database judges it, in every time zone.
+ * Tiny evaluator of the Prisma `where` shapes the month filters build (AND / OR / NOT, equality, null, in, not, gte / lte,
+ * contains, startsWith, and a to-one relation filter `is` over an object the row carries), over rows whose `date` is a
+ * 'YYYY-MM-DD' string. A Date bound is read by its UTC calendar day, which is what the driver does with a bound on a
+ * `@db.Date` column (it sends the UTC date part), so a bound that is not built as a UTC-midnight day is judged here exactly as the database judges it, in every time zone.
  */
 export type Row = Record<string, unknown>;
 
@@ -35,6 +35,14 @@ export function matchesWhere(row: Row, where: Record<string, unknown> | undefine
       continue;
     }
     const c = condition as Record<string, unknown>;
+    // A to-one relation filter: the related row (an object on the row) must exist and match
+    if ('is' in c) {
+      if (c.is === null) {
+        if (value !== null && value !== undefined) return false;
+      } else if (value === null || value === undefined || !matchesWhere(value as Row, c.is as Record<string, unknown>)) return false;
+      continue;
+    }
+    if ('not' in c && value === c.not) return false;
     if ('in' in c && !(c.in as unknown[]).includes(value)) return false;
     if ('equals' in c && value !== c.equals) return false;
     if ('contains' in c && !(typeof value === 'string' && value.toLowerCase().includes(String(c.contains).toLowerCase()))) return false;

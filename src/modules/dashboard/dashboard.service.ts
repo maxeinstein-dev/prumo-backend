@@ -6,7 +6,7 @@ import { forecastBatch } from '../recurring-transactions/recurring-forecast.js';
 import { TransactionType, CategoryType, GENERAL_BUDGET_CATEGORY, getCategoriesByType, getCategoryColor, CATEGORY_NAME_DISPLAY } from '../../shared/enums/index.js';
 import { isCustomCategoryName, toCustomCategoryName } from '../../shared/utils/categoryHelpers.js';
 import { budgetStatusOf } from '../budgets/budget-status.js';
-import { NOT_INVOICE_PAYMENT, expenseDelta, incomeDelta, isRefundRow } from '../budgets/budget-spending.js';
+import { NOT_INVOICE_PAYMENT, expenseDelta, incomeDelta, isInvestmentContribution, isRefundRow } from '../budgets/budget-spending.js';
 import type {
   DashboardOverviewQuery,
   DashboardOverviewResponse,
@@ -54,6 +54,9 @@ export async function getDashboardOverview(query: DashboardOverviewQuery): Promi
       },
       include: {
         account: { select: { type: true } },
+        // The two accounts of a transfer: an aporte counts in the budgets (P24)
+        fromAccount: { select: { type: true } },
+        toAccount: { select: { type: true } },
       },
     }),
     // Previous month transactions
@@ -463,6 +466,8 @@ function calculateBudgetVsRealized(
     categoryName: string | null;
     accountId: string | null;
     account: { type: string } | null;
+    fromAccount?: { type: string } | null;
+    toAccount?: { type: string } | null;
     id?: string;
   }>,
   summary: DashboardSummary,
@@ -473,8 +478,20 @@ function calculateBudgetVsRealized(
   const categoryOwnSpending = new Map<string, number>();
   let ownTotalExpense = 0;
   const categoryIncome = new Map<string, number>();
+  // Aportes (P24): spending of the budgets like on the budget screen (budgetSpendingWhere), whole (nobody divides one),
+  // but not of the income/expense summary, which keeps transfers out.
+  let contributionCents = 0;
 
   for (const t of transactions) {
+    if (isInvestmentContribution(t)) {
+      const amount = Math.abs(typeof t.amount === 'number' ? t.amount : t.amount.toNumber());
+      contributionCents += Math.round(amount * 100);
+      if (t.categoryName) {
+        categorySpending.set(t.categoryName, (categorySpending.get(t.categoryName) || 0) + amount);
+        categoryOwnSpending.set(t.categoryName, (categoryOwnSpending.get(t.categoryName) || 0) + amount);
+      }
+      continue;
+    }
     if (!t.categoryName) continue;
     if (t.type === TransactionType.TRANSFER || t.type === TransactionType.ALLOCATION) continue;
 
@@ -508,8 +525,9 @@ function calculateBudgetVsRealized(
 
     if (budget.categoryName === 'Geral' || budget.categoryName === GENERAL_BUDGET_CATEGORY) {
       // General budget - use total
-      spent = isExpenseBudget ? summary.totalExpense : summary.totalIncome;
-      ownSpent = isExpenseBudget ? ownTotalExpense : spent;
+      const contributions = contributionCents / 100;
+      spent = isExpenseBudget ? summary.totalExpense + contributions : summary.totalIncome;
+      ownSpent = isExpenseBudget ? ownTotalExpense + contributions : spent;
     } else {
       spent = isExpenseBudget
         ? (categorySpending.get(budget.categoryName) || 0)

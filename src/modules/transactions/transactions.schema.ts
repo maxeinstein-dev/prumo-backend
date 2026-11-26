@@ -270,6 +270,8 @@ export const createTransferSchema = z.object({
   description: z.string().max(255).optional(),
   date: localDateSchema,
   notes: z.string().max(1000).optional(),
+  // Optional: TRANSFER when left out. An aporte (into an investment account) counts in the budget of this category (P24)
+  categoryName: categoryNameSchema.optional(),
 });
 
 export type CreateTransferInput = z.infer<typeof createTransferSchema>;

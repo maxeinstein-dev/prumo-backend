@@ -15,7 +15,8 @@ import { utcToday } from '../transactions/transactions.service.js';
  * The rows are exactly the ones of the "General" expense budget of the month (budgetSpendingWhere: expenses only, by
  * planning month, card invoice payments left out, since the purchases of the card already count on their own), each by
  * its own share (what other people owe on it taken off). So the total of a month is the General budget's own spending.
- * A card purchase counts as credit in the month it is filed under, not when the invoice is paid.
+ * A card purchase counts as credit in the month it is filed under, not when the invoice is paid. The aportes of the
+ * General budget (P24) are left out: they are not purchases, so the total is the General budget minus them.
  */
 
 export interface MethodAmounts {
@@ -55,6 +56,8 @@ async function monthCents(householdId: string, month: string, creditIds: Readonl
   let credit = 0;
   let other = 0;
   for (const row of rows) {
+    // An aporte (P24) is in the General budget but is not a purchase: paid on neither a card nor debit
+    if (row.type === 'TRANSFER') continue;
     const cents = signedOwnCents(row, theirShares);
     if (row.accountId && creditIds.has(row.accountId)) credit += cents;
     else other += cents;

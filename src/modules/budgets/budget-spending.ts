@@ -17,8 +17,30 @@ import { notInvoicePaymentWhere } from '../transactions/invoice-payment-link.js'
  *
  * The payment of a card invoice (see invoice-payment-link.ts) is left out: the purchases of the
  * card already count on their own dates, so the payment would count the same money twice.
+ *
+ * An aporte (P24) counts as spending of an expense budget: a TRANSFER into an investment account from an account that is
+ * not one. It counts in the budget of its category (the screen files it under "Investimentos") and in the General budget;
+ * one with the default category (TRANSFER) counts in the General budget only. A redemption, a transfer between two
+ * investment accounts or between banks, and a buy inside the investment account (not a transaction) never count. Only
+ * the spending rule changes: the transfer already moved the balances, and nothing here touches them.
  */
 export const NOT_INVOICE_PAYMENT = notInvoicePaymentWhere();
+
+/** An aporte: a transfer from an account that is not an investment account into one that is. */
+export const INVESTMENT_CONTRIBUTION_WHERE = {
+  type: 'TRANSFER',
+  toAccount: { is: { type: 'INVESTMENT' } },
+  fromAccount: { is: { type: { not: 'INVESTMENT' } } },
+} as const;
+
+/** The same rule over a row read with the types of its two accounts. */
+export function isInvestmentContribution(row: {
+  type: string;
+  fromAccount?: { type: string } | null;
+  toAccount?: { type: string } | null;
+}): boolean {
+  return row.type === 'TRANSFER' && row.toAccount?.type === 'INVESTMENT' && !!row.fromAccount && row.fromAccount.type !== 'INVESTMENT';
+}
 
 export function budgetSpendingWhere(
   budget: { householdId: string | undefined; categoryName: string; type: string },
@@ -27,9 +49,9 @@ export function budgetSpendingWhere(
   const { AND: periodAnd, ...period } = periodWhere as { AND?: unknown };
   const periodConditions = periodAnd === undefined ? [] : Array.isArray(periodAnd) ? periodAnd : [periodAnd];
   const isExpense = budget.type === CategoryType.EXPENSE;
-  // An expense budget takes the expenses and the refunds; an income budget takes the income that is not a refund
+  // An expense budget takes the expenses, the refunds and the aportes; an income budget takes the income that is not a refund
   const typeConditions = isExpense
-    ? [{ OR: [{ type: CategoryType.EXPENSE }, { type: CategoryType.INCOME, isRefund: true }] }]
+    ? [{ OR: [{ type: CategoryType.EXPENSE }, { type: CategoryType.INCOME, isRefund: true }, INVESTMENT_CONTRIBUTION_WHERE] }]
     : [{ type: budget.type as CategoryType }, { NOT: { isRefund: true } }];
   return {
     householdId: budget.householdId,

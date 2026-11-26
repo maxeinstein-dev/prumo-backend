@@ -129,7 +129,9 @@ describe('budget spending: the alert and the screen use one definition', () => {
     const period = { AND: [] };
     const notPayment = { invoicePaymentAccountId: null, OR: [{ attachmentUrl: null }, { NOT: { attachmentUrl: { startsWith: 'invoice_pay:' } } }] };
     // an expense budget takes expenses and refunds (income marked isRefund); an income budget takes income that is not a refund
-    const expenseOrRefund = { OR: [{ type: 'EXPENSE' }, { type: 'INCOME', isRefund: true }] };
+    // ...and the aportes (P24): a transfer from an account that is not an investment account into one that is
+    const aporte = { type: 'TRANSFER', toAccount: { is: { type: 'INVESTMENT' } }, fromAccount: { is: { type: { not: 'INVESTMENT' } } } };
+    const expenseOrRefund = { OR: [{ type: 'EXPENSE' }, { type: 'INCOME', isRefund: true }, aporte] };
     const incomeNotRefund = [{ type: 'INCOME' }, { NOT: { isRefund: true } }];
     expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GENERAL', type: 'EXPENSE' }, period)).toEqual({ householdId: HH, AND: [expenseOrRefund, notPayment] });
     expect(budgetSpendingWhere({ householdId: HH, categoryName: 'GROCERIES', type: 'INCOME' }, period)).toEqual({ householdId: HH, categoryName: 'GROCERIES', AND: [...incomeNotRefund, notPayment] });
@@ -141,6 +143,19 @@ describe('budget spending: the alert and the screen use one definition', () => {
     expect(sumSpending([{ amount: dec(-0.1) }, { amount: dec(0.2) }])).toBe(0.3);
     // a refund comes off the sum
     expect(sumSpending([{ amount: dec(-100) }, { amount: dec(30), isRefund: true }])).toBe(70);
+  });
+
+  it('an aporte (bank to an investment account) counts on both sides; a redemption, a broker-to-broker and a bank-to-bank transfer do not', async () => {
+    const bankAccount = { type: 'CHECKING' };
+    const brokerAccount = { type: 'INVESTMENT' };
+    budget({ monthlyLimit: 290 });
+    tx({ type: 'TRANSFER', amount: 250, fromAccount: bankAccount, toAccount: brokerAccount });
+    tx({ type: 'TRANSFER', amount: 50, fromAccount: brokerAccount, toAccount: bankAccount });
+    tx({ type: 'TRANSFER', amount: 70, fromAccount: brokerAccount, toAccount: brokerAccount });
+    tx({ type: 'TRANSFER', amount: 80, fromAccount: bankAccount, toAccount: { type: 'SAVINGS' } });
+    // a transfer whose source account was deleted is not known to be an aporte
+    tx({ type: 'TRANSFER', amount: 90, fromAccount: null, toAccount: brokerAccount });
+    expect(await both()).toEqual({ screen: 250, alert: 250 });
   });
 
   it('guard: neither side builds its own filter or sum, both go through budget-spending', () => {
