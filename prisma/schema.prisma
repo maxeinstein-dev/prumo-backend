@@ -798,6 +798,7 @@ enum NotificationType {
   BUDGET_ALERT
   TRANSACTION_REMINDER
   GOAL_UPDATE
+  SYSTEM_ALERT // P25 L6: notices of the system itself (e.g. the Pluggy secret about to expire)
   // Future types can be added here
 }
 

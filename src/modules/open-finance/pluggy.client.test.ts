@@ -218,6 +218,18 @@ describe('createPluggyClient', () => {
     await expect(client.listAccounts(ITEM)).rejects.toMatchObject({ kind: 'http', status: 500 });
   });
 
+  it('checkCredentials answers ok when the keys are accepted and refused when Pluggy turns them down', async () => {
+    const ok = fakeFetch((call) => authOk(call) ?? json(404, {}));
+    await expect(createPluggyClient({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, fetch: ok.fn }).checkCredentials()).resolves.toBe('ok');
+    expect(ok.calls).toHaveLength(1);
+
+    const refused = fakeFetch(() => json(401, { codeDescription: 'CLIENT_SECRET_EXPIRED' }));
+    await expect(createPluggyClient({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, fetch: refused.fn }).checkCredentials()).resolves.toBe('refused');
+
+    const down = fakeFetch(() => json(503, {}));
+    await expect(createPluggyClient({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, fetch: down.fn }).checkCredentials()).rejects.toMatchObject({ kind: 'http', status: 503 });
+  });
+
   it('a network failure fails as network', async () => {
     const fn = vi.fn(async () => {
       throw new TypeError('fetch failed');
