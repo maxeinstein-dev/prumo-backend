@@ -5,12 +5,13 @@ import {
   requireEditor,
   ensurePersonalHousehold,
 } from '../../shared/middleware/authorization.middleware.js';
-import { cashFlowQuerySchema, dashboardOverviewQuerySchema, incomeSplitQuerySchema, monthCloseBodySchema, monthCloseQuerySchema, netWorthQuerySchema, spendingByMethodQuerySchema } from './dashboard.schema.js';
+import { cashFlowQuerySchema, dashboardOverviewQuerySchema, incomeSplitQuerySchema, monthCloseBodySchema, monthCloseQuerySchema, netWorthQuerySchema, purchaseSimulationBodySchema, spendingByMethodQuerySchema } from './dashboard.schema.js';
 import { loadSpendingByMethod } from './spending-by-method.loader.js';
 import { loadCashFlow } from './cash-flow.loader.js';
 import { loadMonthClose, saveMonthClosing } from './month-close.js';
 import { loadNetWorth } from './net-worth.loader.js';
 import { loadIncomeSplit } from './income-split.loader.js';
+import { loadPurchaseSimulation } from './purchase-simulation.loader.js';
 import * as dashboardService from './dashboard.service.js';
 
 export async function dashboardRoutes(app: FastifyInstance) {
@@ -493,6 +494,35 @@ export async function dashboardRoutes(app: FastifyInstance) {
     await requireHouseholdMember(request, householdId);
 
     const data = await loadSpendingByMethod({ householdId, months: query.months, to: query.to });
+    return reply.send({ success: true, data });
+  });
+
+  /**
+   * POST /dashboard/purchase-simulation
+   * How the coming months look if a purchase were made in N installments (committed, new installment, expected income,
+   * leftover, tightest month, budgets it breaks, average of the last 6 months). Read-only: nothing is saved, so a
+   * member who can only view may use it.
+   */
+  app.post('/purchase-simulation', {
+    schema: {
+      description: 'Simulate an installment purchase over the coming months (read-only)',
+      tags: ['Dashboard'],
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const body = purchaseSimulationBodySchema.parse(request.body);
+    const householdId = body.householdId || await ensurePersonalHousehold(request);
+    await requireHouseholdMember(request, householdId);
+
+    const data = await loadPurchaseSimulation({
+      householdId,
+      totalAmount: body.totalAmount,
+      installments: body.installments,
+      ...(body.accountId && { accountId: body.accountId }),
+      ...(body.categoryName && { categoryName: body.categoryName }),
+      ...(body.firstMonth && { firstMonth: body.firstMonth }),
+      ...(body.ownSharePercent !== undefined && { ownSharePercent: body.ownSharePercent }),
+    });
     return reply.send({ success: true, data });
   });
 }
