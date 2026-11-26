@@ -14,6 +14,8 @@ import pg from 'pg';
  *   TZ=UTC               TEST_DATABASE_ADMIN_URL=... npx vitest run src/modules/transactions/transactions.month-bounds.db.test.ts
  */
 const adminUrl = process.env.TEST_DATABASE_ADMIN_URL;
+// The CI job provides a Postgres service: there a missing URL is a broken workflow, not a reason to skip in silence
+if (process.env.CI && !adminUrl) throw new Error('TEST_DATABASE_ADMIN_URL is required in CI (see .github/workflows/ci.yml)');
 
 // Same client as the app, over a pool the test can end, so the scratch database can be dropped quietly.
 vi.mock('../../shared/db/prisma.js', async () => {
@@ -142,11 +144,13 @@ describe.skipIf(!adminUrl)('month filters on a real database', () => {
   });
 
   it('the budget summary of each month spends only its own rows', async () => {
-    const spent = async (month: string) => (await budgets.getBudgetSummary({ householdId, month } as never)).budgets.map((b) => b.spending);
-    // the summary lists every budget of the household (three GROCERIES budgets, one per month), all with the month's spending
-    expect(await spent('2026-09')).toEqual([50, 50, 50]);
-    expect(await spent('2026-10')).toEqual([210, 210, 210]);
-    expect(await spent('2026-11')).toEqual([70, 70, 70]);
+    const spent = async (month: string) =>
+      (await budgets.getBudgetSummary({ householdId, month } as never)).budgets.map((b) => [Number(b.monthlyLimit), b.spending]);
+    // the summary lists the budget in force in the month (budget-effective.ts): of the three GROCERIES budgets, the
+    // one of that month replaces the older one, and it spends only the month's rows
+    expect(await spent('2026-09')).toEqual([[100, 50]]);
+    expect(await spent('2026-10')).toEqual([[200, 210]]);
+    expect(await spent('2026-11')).toEqual([[300, 70]]);
   });
 
   it('creating and moving a budget stores the first day of the picked month', async () => {
