@@ -32,6 +32,7 @@ import { notificationRoutes } from './modules/notifications/index.js';
 import { dashboardRoutes } from './modules/dashboard/index.js';
 import { deviceRoutes } from './modules/devices/index.js';
 import { captureRoutes } from './modules/captures/index.js';
+import { openFinanceRoutes } from './modules/open-finance/index.js';
 import { buildCommit } from './shared/utils/buildInfo.js';
 import { registerDbHealthRoute } from './shared/health/db-health.js';
 import { checkCorsOrigin } from './shared/utils/cors-origin.js';
@@ -139,6 +140,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         { name: 'People', description: 'People, shared expenses, balances and settlements' },
         { name: 'Devices', description: 'Device tokens for the Android capture app' },
         { name: 'Captures', description: 'Raw bank notification intake from the Android app' },
+        { name: 'Open Finance', description: 'Read-only preview of the accounts linked through Meu Pluggy' },
       ],
     },
   });
@@ -315,6 +317,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(dashboardRoutes, { prefix: '/dashboard' });
   await app.register(deviceRoutes, { prefix: '/devices' });
   await app.register(captureRoutes, { prefix: '/captures' });
+  await app.register(openFinanceRoutes, { prefix: '/open-finance' });
 
   return app;
 }
