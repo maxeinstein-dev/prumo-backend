@@ -218,3 +218,36 @@ describe('rules adjusted after the first real check (27/11/2026)', () => {
     expect(result.matched[0].transactionId).toBe(near.id);
   });
 });
+
+describe('pass-through, second real check (27/11/2026)', () => {
+  it('money in and out of the same account on consecutive days is a pass-through too (same day first)', () => {
+    const lines = classifyAccount(
+      [tx('2026-10-28', 300, 'Transferência recebida'), tx('2026-10-29', -300, 'Transferência enviada pelo Pix'), tx('2026-10-31', -300, 'Transferência enviada pelo Pix')],
+      { prumoAccountId: P_MAIN, ignoredSavings: [] },
+    );
+    expect(lines.map((l) => l.kind)).toEqual(['passthrough', 'passthrough', 'candidate']);
+  });
+
+  it('a pass-through that Prumo has as transfers (a round trip registered by hand) is matched, not "only in Prumo"', () => {
+    const out = line({ cents: -1000, kind: 'passthrough', date: '2026-11-15' });
+    const inn = line({ cents: 1000, kind: 'passthrough', date: '2026-11-15' });
+    const go = prumo({ type: 'TRANSFER', accountId: null, fromAccountId: P_MAIN, toAccountId: P_OTHER, cents: 1000, date: '2026-11-15' });
+    const back = prumo({ type: 'TRANSFER', accountId: null, fromAccountId: P_OTHER, toAccountId: P_MAIN, cents: 1000, date: '2026-11-15' });
+
+    const result = matchWithPrumo({ lines: [], passthrough: [out, inn], transfers: [], prumo: [go, back], from: '2026-11-01', to: '2026-11-27' });
+
+    expect(result.onlyInPrumo).toEqual([]);
+    expect(result.matchedPassthrough).toEqual([
+      { line: out, transactionId: go.id },
+      { line: inn, transactionId: back.id },
+    ]);
+  });
+
+  it('a pass-through never takes an expense or an income of Prumo (only transfers)', () => {
+    const out = line({ cents: -1000, kind: 'passthrough' });
+    const expense = prumo({ cents: 1000 });
+    const result = matchWithPrumo({ lines: [], passthrough: [out], transfers: [], prumo: [expense], from: '2026-11-01', to: '2026-11-27' });
+    expect(result.matchedPassthrough).toEqual([]);
+    expect(result.onlyInPrumo).toEqual([expense]);
+  });
+});
