@@ -166,3 +166,55 @@ describe('matchWithPrumo', () => {
     expect(result.onlyInPrumo).toEqual([]);
   });
 });
+
+describe('rules adjusted after the first real check (27/11/2026)', () => {
+  it('only a line that is exactly "Rendimentos" is a savings yield; fund income with that word is a candidate', () => {
+    const lines = classifyAccount(
+      [tx('2026-11-20', 0.2, 'Rendimentos'), tx('2026-11-19', 4.28, 'RENDIMENTOS DE CLIENTES FUNDO11 S/ 100')],
+      { prumoAccountId: P_MAIN, ignoredSavings: [] },
+    );
+    expect(lines.map((l) => l.kind)).toEqual(['yield', 'candidate']);
+  });
+
+  it('a payment from an ignored savings is outside even when more was withdrawn than paid (the rest stays)', () => {
+    const lines = classifyAccount(
+      [
+        tx('2026-11-12', 350, 'Dinheiro retirado Cofrinho Pai'),
+        tx('2026-11-12', -350, 'Dinheiro retirado'),
+        tx('2026-11-12', -320, 'Pix enviado Fulano Exemplo'),
+      ],
+      { prumoAccountId: P_MAIN, ignoredSavings: ['Cofrinho Pai'] },
+    );
+    expect(lines[2]).toMatchObject({ kind: 'outside', savingsName: 'Cofrinho Pai' });
+  });
+
+  it('money that enters and leaves the same account on the same day with the same value is a pass-through (both lines)', () => {
+    const lines = classifyAccount(
+      [
+        tx('2026-11-16', 750, 'Transferência recebida Fulana'),
+        tx('2026-11-16', -750, 'Transferência enviada pelo Pix'),
+        tx('2026-11-16', 10.01, 'Pix recebido Titular'),
+        tx('2026-11-16', -10, 'Pix enviado Titular'),
+        tx('2026-11-17', -750, 'Transferência enviada pelo Pix'),
+      ],
+      { prumoAccountId: P_MAIN, ignoredSavings: [] },
+    );
+    expect(lines.map((l) => l.kind)).toEqual(['passthrough', 'passthrough', 'candidate', 'candidate', 'candidate']);
+  });
+
+  it('matching falls back to the same value in the same month when no Prumo transaction is within 3 days', () => {
+    const bill = line({ cents: -12425, date: '2026-11-05' });
+    const monthly = prumo({ cents: 12425, date: '2026-11-01' });
+    const otherMonth = prumo({ cents: 12425, date: '2026-10-01' });
+    const result = matchWithPrumo({ lines: [bill], transfers: [], prumo: [otherMonth, monthly], from: '2026-10-28', to: '2026-11-27' });
+    expect(result.matched).toEqual([{ line: bill, transactionId: monthly.id }]);
+  });
+
+  it('the 3-day window wins over the same-month fallback', () => {
+    const out = line({ cents: -5000, date: '2026-11-20' });
+    const sameMonth = prumo({ cents: 5000, date: '2026-11-02' });
+    const near = prumo({ cents: 5000, date: '2026-11-21' });
+    const result = matchWithPrumo({ lines: [out], transfers: [], prumo: [sameMonth, near], from: '2026-10-28', to: '2026-11-27' });
+    expect(result.matched[0].transactionId).toBe(near.id);
+  });
+});

@@ -26,7 +26,7 @@ vi.mock('./open-finance.check.js', () => ({ checkOpenFinance: vi.fn() }));
 
 const HH = '11111111-1111-4111-8111-111111111111';
 const AUTH = { authorization: 'Bearer test' };
-const REPORT = { from: '2026-10-27', to: '2026-11-26', items: [], accounts: [], transfers: { matched: 0, missing: [] }, savingsNames: [], cardsNotChecked: 0 };
+const REPORT = { from: '2026-10-27', to: '2026-11-26', items: [], accounts: [], transfers: { matched: 0, missing: [] }, savingsNames: [], cardsNotChecked: 0, investmentsNotChecked: 0 };
 
 const m = {
   member: vi.mocked(requireHouseholdMember),

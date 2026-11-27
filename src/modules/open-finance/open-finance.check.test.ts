@@ -12,10 +12,12 @@ const PW = 'pw';
 const PB = 'pb';
 const PCARD = 'pcard';
 const PX = 'px';
+const PINV = 'pinv';
 const ACC_W = 'cccccccc-0000-4000-8000-000000000001';
 const ACC_B = 'cccccccc-0000-4000-8000-000000000002';
 const ACC_CARD = 'cccccccc-0000-4000-8000-000000000003';
 const ACC_X = 'cccccccc-0000-4000-8000-000000000004';
+const ACC_INV = 'cccccccc-0000-4000-8000-000000000005';
 const NOW = new Date('2026-11-26T15:00:00.000Z');
 
 let seq = 0;
@@ -50,6 +52,8 @@ const item = (id: string, status = 'UPDATED', executionStatus: string | null = '
 const TX: Record<string, PluggyTransaction[]> = {
   [PW]: [
     t(PW, '2026-11-20', 0.3, 'Rendimentos'),
+    t(PW, '2026-11-21', 0.25, 'Rendimentos'),
+    t(PW, '2026-10-30', 0.1, 'Rendimentos'),
     t(PW, '2026-11-18', 23, 'Dinheiro retirado Cofrinho Azul'),
     t(PW, '2026-11-18', -23, 'Dinheiro retirado'),
     t(PW, '2026-11-18', -22.5, 'Pix enviado Loja Exemplo'), // in Prumo
@@ -61,6 +65,7 @@ const TX: Record<string, PluggyTransaction[]> = {
   ],
   [PB]: [t(PB, '2026-11-16', 750, 'Transferência recebida Titular Exemplo')],
   [PCARD]: [t(PCARD, '2026-11-16', 51.1, 'Compra Exemplo 1/6')],
+  [PINV]: [t(PINV, '2026-11-19', 4.28, 'RENDIMENTOS DE CLIENTES FUNDO11')],
 };
 
 function fakeClient(): PluggyClient {
@@ -68,7 +73,7 @@ function fakeClient(): PluggyClient {
     checkCredentials: vi.fn(async () => 'ok' as const),
     getItem: vi.fn(async (id: string) => (id === ITEM_X ? item(id, 'LOGIN_ERROR', 'USER_AUTHORIZATION_EXPIRED') : item(id))),
     listAccounts: vi.fn(async (id: string) =>
-      id === ITEM_W ? [acc(PW, ITEM_W, 'BANK')] : id === ITEM_B ? [acc(PB, ITEM_B, 'BANK'), acc(PCARD, ITEM_B, 'CREDIT')] : [acc(PX, ITEM_X, 'BANK')],
+      id === ITEM_W ? [acc(PW, ITEM_W, 'BANK')] : id === ITEM_B ? [acc(PB, ITEM_B, 'BANK'), acc(PCARD, ITEM_B, 'CREDIT'), acc(PINV, ITEM_B, 'BANK')] : [acc(PX, ITEM_X, 'BANK')],
     ),
     listTransactions: vi.fn(async (accountId: string) => TX[accountId] ?? []),
   };
@@ -81,12 +86,20 @@ function fakeDb() {
     { pluggyItemId: ITEM_B, pluggyAccountId: PB, accountId: ACC_B },
     { pluggyItemId: ITEM_B, pluggyAccountId: PCARD, accountId: ACC_CARD },
     { pluggyItemId: ITEM_X, pluggyAccountId: PX, accountId: ACC_X },
+    { pluggyItemId: ITEM_B, pluggyAccountId: PINV, accountId: ACC_INV },
   ]);
   const findTx = vi.fn(async () => [
     { id: 'p-pix', type: 'EXPENSE', accountId: ACC_W, fromAccountId: null, toAccountId: null, amount: '22.50', date: new Date('2026-11-18T00:00:00Z'), description: 'Loja', paid: true },
     { id: 'p-extra', type: 'EXPENSE', accountId: ACC_W, fromAccountId: null, toAccountId: null, amount: '99.00', date: new Date('2026-11-10T00:00:00Z'), description: 'Só no Prumo', paid: false },
   ]);
-  const db = { openFinanceLink: { findMany: findLinks }, transaction: { findMany: findTx } };
+  const findAccounts = vi.fn(async () => [
+    { id: ACC_W, type: 'CHECKING' },
+    { id: ACC_B, type: 'CHECKING' },
+    { id: ACC_CARD, type: 'CREDIT' },
+    { id: ACC_X, type: 'CHECKING' },
+    { id: ACC_INV, type: 'INVESTMENT' },
+  ]);
+  const db = { openFinanceLink: { findMany: findLinks }, transaction: { findMany: findTx }, account: { findMany: findAccounts } };
   return { db: db as unknown as CheckDb, findTx };
 }
 
@@ -108,7 +121,8 @@ describe('checkOpenFinance', () => {
 
     const wallet = report.accounts.find((a) => a.pluggyAccountId === PW)!;
     expect(wallet.prumoAccountId).toBe(ACC_W);
-    expect(wallet.counts).toEqual({ yield: 1, savings: 4, outside: 1, matched: 1, missing: 1 });
+    expect(wallet.counts).toEqual({ yield: 3, savings: 4, outside: 1, passthrough: 0, matched: 1, missing: 1 });
+    expect(wallet.yieldsByMonth).toEqual([{ month: '2026-10', cents: 10 }, { month: '2026-11', cents: 55 }]);
     expect(wallet.missing).toEqual([{ id: expect.any(String), date: '2026-11-05', cents: -12425, description: 'Pagamento com Pix Internet Exemplo', savingsName: null }]);
     expect(wallet.outside).toEqual([expect.objectContaining({ cents: -32000, savingsName: 'Cofrinho Pai' })]);
     expect(wallet.onlyInPrumo).toEqual([{ id: 'p-extra', type: 'EXPENSE', date: '2026-11-10', cents: 9900, description: 'Só no Prumo', paid: false }]);
@@ -120,6 +134,9 @@ describe('checkOpenFinance', () => {
 
     // Cards are not checked here (their purchases come from the invoice OFX); the expired item is reported, not read.
     expect(report.cardsNotChecked).toBe(1);
+    // The investment account belongs to the investments check (L5): not read here.
+    expect(report.investmentsNotChecked).toBe(1);
+    expect(client.listTransactions).not.toHaveBeenCalledWith(PINV, expect.anything());
     expect(client.listTransactions).not.toHaveBeenCalledWith(PCARD, expect.anything());
     expect(client.listTransactions).not.toHaveBeenCalledWith(PX, expect.anything());
     expect(report.items).toEqual(
@@ -131,7 +148,7 @@ describe('checkOpenFinance', () => {
   });
 
   it('with no linked bank account it answers empty and reads no Prumo transaction', async () => {
-    const db = { openFinanceLink: { findMany: vi.fn(async () => [{ pluggyItemId: ITEM_W, pluggyAccountId: null, accountId: null }]) }, transaction: { findMany: vi.fn() } };
+    const db = { openFinanceLink: { findMany: vi.fn(async () => [{ pluggyItemId: ITEM_W, pluggyAccountId: null, accountId: null }]) }, transaction: { findMany: vi.fn() }, account: { findMany: vi.fn(async () => []) } };
     const report = await checkOpenFinance({ householdId: HH, db: db as unknown as CheckDb, client: fakeClient(), now: NOW, ignoredSavings: [] });
     expect(report.accounts).toEqual([]);
     expect(db.transaction.findMany).not.toHaveBeenCalled();
