@@ -5,6 +5,7 @@ import { prisma } from '../../shared/db/prisma.js';
 import { AppError } from '../../shared/errors/app-error.js';
 import { authMiddleware } from '../../shared/middleware/auth.middleware.js';
 import { ensurePersonalHousehold, requireEditor, requireHouseholdMember } from '../../shared/middleware/authorization.middleware.js';
+import { balanceChecks, type BalancesDb } from './open-finance.balances.js';
 import { checkOpenFinance, type CheckDb } from './open-finance.check.js';
 import { importOpenFinance, type ImportDb } from './open-finance.import.js';
 import { listSavings, replaceSavings, type SavingsDb } from './open-finance.savings.service.js';
@@ -278,5 +279,24 @@ export async function openFinanceRoutes(app: FastifyInstance) {
       importOpenFinance({ householdId, db: prisma as unknown as ImportDb, client: clientFromEnv() }),
     );
     return reply.send({ success: true, data });
+  });
+
+  /**
+   * GET /open-finance/balances : the bank balance of the last import against each linked Prumo account (P25 L3).
+   * Reads only the database; the Início shows the accounts with `alert`.
+   */
+  app.get('/balances', {
+    schema: {
+      description: 'Bank balance of the last Open Finance import against the Prumo balance of each linked account; alert when the difference passes the tolerance (1 cent, or R$ 1 when the bank balance has an estimated part)',
+      tags: ['Open Finance'],
+      security: [{ bearerAuth: [] }],
+      response: objectResponse,
+    },
+  }, async (request, reply) => {
+    const query = householdQuerySchema.parse(request.query);
+    const householdId = query.householdId ?? await ensurePersonalHousehold(request);
+    await requireHouseholdMember(request, householdId);
+    const balances = await balanceChecks({ db: prisma as unknown as BalancesDb, householdId });
+    return reply.send({ success: true, data: { balances } });
   });
 }

@@ -23,7 +23,7 @@ import { PARSER_VERSION } from '../captures/parsers/index.js';
 import { OPEN_FINANCE_PACKAGE } from '../captures/open-finance-package.js';
 import { analyzeOpenFinance, ymd, type AnalyzeDb } from './open-finance.analyze.js';
 import type { BankLine } from './open-finance.classify.js';
-import { splitYields } from './open-finance.savings.js';
+import { estimatedSavingsBalance, splitYields, type SavingsConfig } from './open-finance.savings.js';
 import type { PluggyClient } from './pluggy.client.js';
 
 export const IMPORT_DAYS = 30;
@@ -57,6 +57,9 @@ export function draftKey(lineId: string): string {
   const key = `of:${lineId}`;
   return key.length <= 40 ? key : `of:${createHash('sha1').update(lineId).digest('hex').slice(0, 37)}`;
 }
+
+const foldName = (text: string): string =>
+  text.normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
 
 const yieldKey = (prumoAccountId: string, month: string) => `of:y:${prumoAccountId.slice(0, 8)}:${month}`;
 const postedAt = (date: string) => new Date(`${date}T15:00:00.000Z`); // noon in Brasília: the bank gives only the day
@@ -252,11 +255,45 @@ export async function importOpenFinance(input: {
     });
   }
 
-  // Sync state of every link: the error of a blocked item, or a clean sync.
+  // The bank balance of each account read (L3): Pluggy's balance of the account plus, for the account the Prumo savings
+  // live in, their estimate. A savings lives in the account whose lines name it; if no line names it, in the only
+  // account that has savings moves at all.
+  const bankBalances = new Map<string, { balance: number; estimated: boolean }>();
+  const named = (config: SavingsConfig, pluggyAccountId: string) => {
+    const names = new Set([config.name, ...config.aliases].map(foldName));
+    return analysis.lines.some((l) => l.pluggyAccountId === pluggyAccountId && l.kind === 'savings' && l.savingsName && names.has(foldName(l.savingsName)));
+  };
+  const withSavings = [...new Set(analysis.lines.filter((l) => l.kind === 'savings').map((l) => l.pluggyAccountId))];
+  for (const link of analysis.readLinks) {
+    const accountBalance = analysis.accountBalances.get(link.pluggyAccountId);
+    if (accountBalance === null || accountBalance === undefined) continue;
+    const mine = analysis.lines.filter((l) => l.pluggyAccountId === link.pluggyAccountId);
+    let cents = Math.round(accountBalance * 100);
+    let estimated = false;
+    for (const config of savings.filter((c) => c.inPrumo)) {
+      const lives = named(config, link.pluggyAccountId) || (withSavings.length === 1 && withSavings[0] === link.pluggyAccountId && !analysis.readLinks.some((other) => named(config, other.pluggyAccountId)));
+      if (!lives) continue;
+      const estimate = estimatedSavingsBalance(config, today, mine, savings);
+      if (estimate === null) continue;
+      cents += estimate;
+      estimated = true;
+    }
+    bankBalances.set(link.pluggyAccountId, { balance: cents / 100, estimated });
+  }
+
+  // Sync state of every link: the error of a blocked item, or a clean sync (with the bank balance, when read).
   const blocked = analysis.items.filter((i) => i.blocked).map((i) => ({ itemId: i.itemId, reason: i.blocked! }));
   for (const link of analysis.links) {
     const reason = blocked.find((b) => b.itemId === link.pluggyItemId)?.reason ?? null;
-    await db.openFinanceLink.update({ where: { id: link.id }, data: reason ? { lastError: reason } : { lastSyncAt: now, lastError: null } });
+    const bank = bankBalances.get(link.pluggyAccountId);
+    const data = reason
+      ? { lastError: reason }
+      : {
+          lastSyncAt: now,
+          lastError: null,
+          ...(bank ? { bankBalance: bank.balance, bankBalanceEstimated: bank.estimated, bankBalanceAt: now } : {}),
+        };
+    await db.openFinanceLink.update({ where: { id: link.id }, data });
   }
 
   return { refs: refRows.length, drafts, transferDrafts, yieldDrafts, blocked };

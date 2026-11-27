@@ -79,6 +79,8 @@ export async function analyzeOpenFinance(input: {
   const items: Array<{ itemId: string; status: string | null; blocked: string | null }> = [];
   const lines: BankLine[] = [];
   const readLinks: AnalyzeLink[] = [];
+  /** Balance Pluggy gives for each account read (reais; the savings are not in it). */
+  const accountBalances = new Map<string, number | null>();
   let cardsNotChecked = 0;
   let investmentsNotChecked = 0;
   const prumoTypes = new Map(
@@ -118,6 +120,7 @@ export async function analyzeOpenFinance(input: {
       const transactions = await input.client.listTransactions(account.id, { from, to });
       lines.push(...classifyAccount(transactions, { prumoAccountId: link.accountId, ignoredSavings }));
       readLinks.push(link);
+      accountBalances.set(account.id, account.balance);
     }
   }
 
@@ -165,5 +168,5 @@ export async function analyzeOpenFinance(input: {
     to,
   });
 
-  return { from, to, links, readLinks, items, lines, savings, result, cardsNotChecked, investmentsNotChecked };
+  return { from, to, links, readLinks, accountBalances, items, lines, savings, result, cardsNotChecked, investmentsNotChecked };
 }
