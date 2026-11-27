@@ -17,12 +17,7 @@ import { Prisma } from '../generated/prisma/client.js';
 import { prisma } from '../shared/db/prisma.js';
 import { AccountType, TransactionType } from '../shared/enums/index.js';
 import { recalculateCreditCardLimit } from '../shared/services/balance.service.js';
-
-function calculateBalanceChange(amount: number, isIncome: boolean, accountType: string): number {
-  const isCreditCard = accountType === AccountType.CREDIT;
-  if (isCreditCard) return isIncome ? -amount : amount;
-  return isIncome ? amount : -amount;
-}
+import { computeAccountBalances, recomputeTransactionsWhere } from './account-balance-recompute.js';
 
 async function main() {
   console.log('🔍 Finding accounts affected by fix_income migration...');
@@ -66,12 +61,9 @@ async function main() {
 
   console.log(`📊 Found ${affectedAccountIds.length} affected accounts`);
 
-  // Get all transactions for affected accounts to recalculate their balances
+  // Get all transactions that move the balances of the affected accounts (incoming transfers included)
   const allTransactions = await prisma.transaction.findMany({
-    where: {
-      accountId: { in: affectedAccountIds },
-      type: { in: [TransactionType.INCOME, TransactionType.EXPENSE, TransactionType.TRANSFER, TransactionType.ALLOCATION] },
-    },
+    where: recomputeTransactionsWhere(affectedAccountIds),
     select: {
       id: true,
       type: true,
@@ -96,98 +88,45 @@ async function main() {
     },
   });
 
-  const accountTypeMap = new Map(accounts.map(a => [a.id, a.type]));
-
-  // Calculate balances for affected accounts only
-  const totalDelta = new Map<string, number>();
-  const transferAvailableDelta = new Map<string, number>();
-  const allocatedDelta = new Map<string, number>();
-  const creditCardAllocationDelta = new Map<string, number>();
-
-  for (const t of allTransactions) {
-    const amount = t.amount.toNumber();
-    const paid = t.paid !== false;
-
-    if (t.type === TransactionType.TRANSFER && t.fromAccountId && t.toAccountId) {
-      if (affectedAccountIds.includes(t.fromAccountId)) {
-        const from = transferAvailableDelta.get(t.fromAccountId) ?? 0;
-        transferAvailableDelta.set(t.fromAccountId, from - amount);
-      }
-      if (affectedAccountIds.includes(t.toAccountId)) {
-        const to = transferAvailableDelta.get(t.toAccountId) ?? 0;
-        transferAvailableDelta.set(t.toAccountId, to + amount);
-      }
-      continue;
-    }
-
-    if (t.type === TransactionType.ALLOCATION && t.accountId && t.relatedEntityId) {
-      if (affectedAccountIds.includes(t.accountId)) {
-        const absAmount = Math.abs(amount);
-        const sign = amount >= 0 ? 1 : -1;
-        const alloc = allocatedDelta.get(t.accountId) ?? 0;
-        allocatedDelta.set(t.accountId, alloc + sign * absAmount);
-      }
-      if (affectedAccountIds.includes(t.relatedEntityId)) {
-        const cc = creditCardAllocationDelta.get(t.relatedEntityId) ?? 0;
-        creditCardAllocationDelta.set(t.relatedEntityId, cc + Math.abs(amount) * (amount >= 0 ? 1 : -1));
-      }
-      continue;
-    }
-
-    if ((t.type === TransactionType.INCOME || t.type === TransactionType.EXPENSE) && paid && t.accountId && affectedAccountIds.includes(t.accountId)) {
-      const accountType = accountTypeMap.get(t.accountId);
-      if (!accountType) continue;
-      const isIncome = t.type === TransactionType.INCOME;
-      const change = calculateBalanceChange(amount, isIncome, accountType);
-      const cur = totalDelta.get(t.accountId) ?? 0;
-      totalDelta.set(t.accountId, cur + change);
-    }
-  }
+  const balances = computeAccountBalances(
+    accounts.map(a => ({ id: a.id, type: a.type, creditLimit: a.creditLimit?.toNumber() ?? 0 })),
+    allTransactions.map(t => ({ ...t, amount: t.amount.toNumber() })),
+    affectedAccountIds
+  );
 
   console.log(`🔄 Recalculating balances for ${accounts.length} affected accounts...`);
 
   await prisma.$transaction(async (tx) => {
     for (const acc of accounts) {
-      const total = totalDelta.get(acc.id) ?? 0;
-      const transfer = transferAvailableDelta.get(acc.id) ?? 0;
-      const allocated = allocatedDelta.get(acc.id) ?? 0;
+      const b = balances.get(acc.id);
+      if (!b) continue;
 
       if (acc.type === AccountType.CREDIT) {
-        const balance = Math.max(0, total);
-        const creditLimit = acc.creditLimit?.toNumber() ?? 0;
-        const allocationDelta = creditCardAllocationDelta.get(acc.id) ?? 0;
-        const totalLimit = Math.max(0, creditLimit + allocationDelta);
-
         await tx.account.update({
           where: { id: acc.id },
           data: {
-            balance: new Prisma.Decimal(balance),
-            totalBalance: new Prisma.Decimal(balance),
-            availableBalance: new Prisma.Decimal(0),
-            allocatedBalance: new Prisma.Decimal(0),
-            totalLimit: new Prisma.Decimal(totalLimit),
+            balance: new Prisma.Decimal(b.balance),
+            totalBalance: new Prisma.Decimal(b.totalBalance),
+            availableBalance: new Prisma.Decimal(b.availableBalance),
+            allocatedBalance: new Prisma.Decimal(b.allocatedBalance),
+            totalLimit: new Prisma.Decimal(b.totalLimit ?? 0),
           },
         });
         await recalculateCreditCardLimit(tx, acc.id);
       } else {
-        const totalBalance = total;
-        const allocatedBalance = Math.max(0, allocated);
-        const availableBalance = totalBalance - allocatedBalance + transfer;
-
-        if (availableBalance < 0) {
+        if (b.totalBalance - b.allocatedBalance < 0) {
           console.warn(
-            `⚠️  Account "${acc.name}" (${acc.id}): available would be ${availableBalance}. Clamping to 0.`
+            `⚠️  Account "${acc.name}" (${acc.id}): available would be ${b.totalBalance - b.allocatedBalance}. Clamping to 0.`
           );
         }
-        const available = Math.max(0, availableBalance);
 
         await tx.account.update({
           where: { id: acc.id },
           data: {
-            balance: new Prisma.Decimal(totalBalance),
-            totalBalance: new Prisma.Decimal(totalBalance),
-            availableBalance: new Prisma.Decimal(available),
-            allocatedBalance: new Prisma.Decimal(allocatedBalance),
+            balance: new Prisma.Decimal(b.balance),
+            totalBalance: new Prisma.Decimal(b.totalBalance),
+            availableBalance: new Prisma.Decimal(b.availableBalance),
+            allocatedBalance: new Prisma.Decimal(b.allocatedBalance),
           },
         });
       }
