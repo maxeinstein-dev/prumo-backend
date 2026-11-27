@@ -67,3 +67,22 @@ describe('ownTransferPairs', () => {
     expect(ownTransferPairs([make(MP, 1, null as never), inc(NU, 1)])).toEqual([]);
   });
 });
+
+describe('ownTransferPairs: Open Finance drafts', () => {
+  const OF = 'open-finance';
+  it('two Open Finance drafts pair only through the same pairKey (they come from the same app)', () => {
+    const o = out(OF, 1, 75000);
+    const i = inc(OF, 1, 75000);
+    o.parsed = { ...(o.parsed as Record<string, unknown>), pairKey: 'pk-1' };
+    i.parsed = { ...(i.parsed as Record<string, unknown>), pairKey: 'pk-1' };
+    const other = inc(OF, 1, 75000);
+    other.parsed = { ...(other.parsed as Record<string, unknown>), pairKey: 'pk-2' };
+    expect(ownTransferPairs([o, other, i])).toEqual([{ outId: o.id, inId: i.id }]);
+  });
+
+  it('an Open Finance draft never pairs with a notification of another app', () => {
+    const o = out(OF, 1, 75000);
+    o.parsed = { ...(o.parsed as Record<string, unknown>), pairKey: 'pk-1' };
+    expect(ownTransferPairs([o, inc(NU, 1, 75000)])).toEqual([]);
+  });
+});

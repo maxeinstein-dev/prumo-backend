@@ -458,6 +458,13 @@ describe('intake of the three formats and an advertisement', () => {
     expect(await countCaptures(HH, 'PENDING')).toBe(2);
   });
 
+  it('a reparse never touches an Open Finance draft (no reader for it: its reading would be wiped)', async () => {
+    const draft = capture('CARD_PURCHASE', { package: 'open-finance', parserVersion: 5 }, { kind: 'PIX_OUT', accountId: ACC, source: 'open-finance' });
+    const result = await reparseCaptures(HH);
+    expect(result.scanned).toBe(0);
+    expect(db.s.captures.find((c) => c.id === draft.id)!.parsed).toMatchObject({ kind: 'PIX_OUT', accountId: ACC });
+  });
+
   it('a reparse that finally understands a study text moves it to the box; one that still does not leaves it in study', async () => {
     capture('XP_STUDY', { parserVersion: 5, title: 'TEST11 pagou rendimentos!', text: 'Você recebeu R$ 12,34 e o valor já está disponível na sua conta.' });
     capture('XP_STUDY', { parserVersion: 5, title: 'Oferta', text: 'Invista.' });
