@@ -122,14 +122,19 @@ export function classifyAccount(
     if (ignored.has(fold(source.savingsName!))) line.kind = 'outside';
   }
 
-  // Pass-through: the same value enters and leaves the account on the same day (a round trip between own accounts, or
-  // money received from someone and sent on). It changes nothing in the balance: both lines are left out.
-  for (const inn of lines) {
-    if (inn.kind !== 'candidate' || inn.cents <= 0) continue;
-    const out = lines.find((o) => o.kind === 'candidate' && o.date === inn.date && o.cents === -inn.cents);
-    if (!out) continue;
-    inn.kind = 'passthrough';
-    out.kind = 'passthrough';
+  // Pass-through: the same value enters and leaves the account on the same day, or the next one (a round trip between
+  // own accounts, or money received from someone and sent on). It changes nothing in the balance: both lines are left
+  // out. Same-day pairs are taken first.
+  for (const maxDays of [0, 1]) {
+    for (const inn of lines) {
+      if (inn.kind !== 'candidate' || inn.cents <= 0) continue;
+      const out = lines.find(
+        (o) => o.kind === 'candidate' && o.cents === -inn.cents && Math.abs(dayDiff(o.date, inn.date)) <= maxDays,
+      );
+      if (!out) continue;
+      inn.kind = 'passthrough';
+      out.kind = 'passthrough';
+    }
   }
   return lines;
 }
@@ -160,6 +165,8 @@ export function pairOwnTransfers(lines: readonly BankLine[]): { transfers: OwnTr
 
 export function matchWithPrumo(input: {
   lines: readonly BankLine[];
+  /** Pass-through lines: never drafts, but they may be transfers Prumo already has (a round trip typed by hand). */
+  passthrough?: readonly BankLine[];
   transfers: readonly OwnTransfer[];
   prumo: readonly PrumoTx[];
   from: string;
@@ -210,6 +217,24 @@ export function matchWithPrumo(input: {
     }
   }
 
+  const matchedPassthrough: Array<{ line: BankLine; transactionId: string }> = [];
+  for (const line of input.passthrough ?? []) {
+    const account = line.prumoAccountId;
+    const hit = input.prumo
+      .filter(
+        (p) =>
+          !used.has(p.id) &&
+          p.type === 'TRANSFER' &&
+          p.cents === Math.abs(line.cents) &&
+          (line.cents < 0 ? p.fromAccountId === account : p.toAccountId === account) &&
+          Math.abs(dayDiff(p.date, line.date)) <= MATCH_DAYS,
+      )
+      .sort(byDistance(line.date))[0];
+    if (!hit) continue;
+    used.add(hit.id);
+    matchedPassthrough.push({ line, transactionId: hit.id });
+  }
+
   const onlyInPrumo = input.prumo.filter((p) => !used.has(p.id) && p.date >= input.from && p.date <= input.to);
-  return { matched, missing, matchedTransfers, missingTransfers, onlyInPrumo };
+  return { matched, missing, matchedTransfers, missingTransfers, matchedPassthrough, onlyInPrumo };
 }

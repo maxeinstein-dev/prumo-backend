@@ -175,7 +175,7 @@ export async function checkOpenFinance(input: {
 
   const { transfers, rest } = pairOwnTransfers(lines);
   const candidates = rest.filter((l) => l.kind === 'candidate');
-  const result = matchWithPrumo({ lines: candidates, transfers, prumo, from, to });
+  const result = matchWithPrumo({ lines: candidates, passthrough: rest.filter((l) => l.kind === 'passthrough'), transfers, prumo, from, to });
 
   const accounts: AccountCheck[] = links
     .filter((l) => lines.some((line) => line.pluggyAccountId === l.pluggyAccountId))
