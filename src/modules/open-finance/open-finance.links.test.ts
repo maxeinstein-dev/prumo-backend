@@ -21,7 +21,7 @@ const P_OTHER = 'bbbbbbbb-0000-4000-8000-000000000003';
 const ACC_BANK = 'cccccccc-0000-4000-8000-000000000001';
 const ACC_CARD = 'cccccccc-0000-4000-8000-000000000002';
 
-type Row = { id: string; householdId: string; pluggyItemId: string; pluggyAccountId: string | null; accountId: string | null };
+type Row = { id: string; householdId: string; pluggyItemId: string; pluggyAccountId: string | null; accountId: string | null; lastSyncAt?: Date | null; lastError?: string | null };
 
 /** An in-memory open_finance_links table plus the household's active accounts. */
 function fakeDb(rows: Row[], accounts: Array<{ id: string; type: string }> = [{ id: ACC_BANK, type: 'CHECKING' }, { id: ACC_CARD, type: 'CREDIT_CARD' }]) {
@@ -116,8 +116,10 @@ describe('listLinks', () => {
             { ...pAcc(P_CARD, ITEM_A, 'CREDIT'), accountId: ACC_CARD },
           ],
           orphanLinks: [],
+          lastSyncAt: null,
+          lastError: null,
         },
-        { itemId: ITEM_B, error: null, accounts: [], orphanLinks: [] },
+        { itemId: ITEM_B, error: null, accounts: [], orphanLinks: [], lastSyncAt: null, lastError: null },
       ],
     });
   });
@@ -139,6 +141,8 @@ describe('listLinks', () => {
       error: 'Pluggy answered with an error (HTTP 400)',
       accounts: [],
       orphanLinks: [{ pluggyAccountId: P_CHECK, accountId: ACC_BANK }],
+      lastSyncAt: null,
+      lastError: null,
     });
   });
 
@@ -248,5 +252,20 @@ describe('items', () => {
     await removeItem({ householdId: HH, db, itemId: ITEM_A });
     expect(table().map((r) => r.pluggyItemId)).toEqual([ITEM_B]);
     await expect(removeItem({ householdId: HH, db, itemId: ITEM_A })).rejects.toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe('listLinks: sync state (P25 L2c)', () => {
+  it('each item says when it was last imported and the last error, if any', async () => {
+    const synced = new Date('2026-11-28T11:00:00.000Z');
+    const { db } = fakeDb([
+      { ...row('r1', ITEM_A, P_CHECK, ACC_BANK), lastSyncAt: synced, lastError: null } as Row,
+      { ...row('r2', ITEM_B, P_OTHER, ACC_CARD), lastSyncAt: null, lastError: 'A autorização deste banco venceu: reconecte no Meu Pluggy.' } as Row,
+    ]);
+    const result = await listLinks({ householdId: HH, db, client: client({ [ITEM_A]: [pAcc(P_CHECK, ITEM_A, 'BANK')], [ITEM_B]: [] }) });
+    expect(result.items.map((i) => [i.itemId, i.lastSyncAt, i.lastError])).toEqual([
+      [ITEM_A, synced.toISOString(), null],
+      [ITEM_B, null, 'A autorização deste banco venceu: reconecte no Meu Pluggy.'],
+    ]);
   });
 });
