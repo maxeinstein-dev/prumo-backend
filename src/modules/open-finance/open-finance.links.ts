@@ -17,6 +17,8 @@ interface LinkRow {
   pluggyItemId: string;
   pluggyAccountId: string | null;
   accountId: string | null;
+  lastSyncAt?: Date | null;
+  lastError?: string | null;
 }
 
 interface LinkTable {
@@ -47,6 +49,10 @@ export interface LinksItem {
   accounts: LinkedAccount[];
   /** Saved links whose Pluggy account was not listed (renewed item, closed account, or the item could not be read). */
   orphanLinks: Array<{ pluggyAccountId: string; accountId: string | null }>;
+  /** Last successful import of this item (ISO), from its links; null = never. */
+  lastSyncAt: string | null;
+  /** Why the last import could not read it (e.g. expired authorization); null when fine. */
+  lastError: string | null;
 }
 
 export interface AccountLinkInput {
@@ -59,7 +65,7 @@ async function householdRows(db: LinksDb, householdId: string): Promise<LinkRow[
   return db.openFinanceLink.findMany({
     where: { householdId },
     orderBy: { createdAt: 'asc' },
-    select: { pluggyItemId: true, pluggyAccountId: true, accountId: true },
+    select: { pluggyItemId: true, pluggyAccountId: true, accountId: true, lastSyncAt: true, lastError: true },
   });
 }
 
@@ -70,6 +76,12 @@ export async function listLinks(input: { householdId: string; db: LinksDb; clien
   const items: LinksItem[] = [];
   for (const itemId of itemIds) {
     const saved = rows.filter((row) => row.pluggyItemId === itemId && row.pluggyAccountId);
+    const itemRows = rows.filter((row) => row.pluggyItemId === itemId);
+    const lastSync = itemRows
+      .map((row) => row.lastSyncAt)
+      .filter((d): d is Date => d instanceof Date)
+      .sort((a, b) => b.getTime() - a.getTime())[0];
+    const lastError = itemRows.map((row) => row.lastError).find((e): e is string => !!e) ?? null;
     let accounts: PluggyAccount[] = [];
     let error: string | null = null;
     try {
@@ -89,6 +101,8 @@ export async function listLinks(input: { householdId: string; db: LinksDb; clien
       orphanLinks: saved
         .filter((row) => !listed.has(row.pluggyAccountId!))
         .map((row) => ({ pluggyAccountId: row.pluggyAccountId!, accountId: row.accountId })),
+      lastSyncAt: lastSync ? lastSync.toISOString() : null,
+      lastError,
     });
   }
   return { items };
