@@ -116,3 +116,28 @@ export function estimatedSavingsBalance(
   }
   return base + earned;
 }
+
+/**
+ * The yield lines summed per day, with Prumo's share of each day (split by the balances at the end of the day before,
+ * rounded). null when some savings has no registered balance (or none is registered). One draft per day (27/11/2026).
+ */
+export function splitYieldsByDay(
+  lines: readonly BankLine[],
+  savings: readonly SavingsConfig[],
+): Array<{ date: string; cents: number; prumoCents: number | null }> {
+  const byDay = new Map<string, number>();
+  for (const line of lines) {
+    if (line.kind !== 'yield') continue;
+    byDay.set(line.date, (byDay.get(line.date) ?? 0) + line.cents);
+  }
+  return [...byDay]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, cents]) => {
+      const before = previousDay(date);
+      const balances = savings.map((s) => ({ s, cents: savingsBalanceOn(s, before, lines) }));
+      const total = balances.reduce((sum, b) => sum + Math.max(b.cents ?? 0, 0), 0);
+      if (savings.length === 0 || balances.some((b) => b.cents === null) || total <= 0) return { date, cents, prumoCents: null };
+      const ours = balances.filter((b) => b.s.inPrumo).reduce((sum, b) => sum + Math.max(b.cents!, 0), 0);
+      return { date, cents, prumoCents: Math.round((cents * ours) / total) };
+    });
+}

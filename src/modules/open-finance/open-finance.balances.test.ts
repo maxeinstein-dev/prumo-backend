@@ -6,10 +6,11 @@ import { balanceChecks, type BalancesDb } from './open-finance.balances.js';
 const HH = '11111111-1111-4111-8111-111111111111';
 const AT = new Date('2026-11-28T13:05:00.000Z');
 
-function fakeDb(links: Array<Record<string, unknown>>, accounts: Array<Record<string, unknown>>) {
+function fakeDb(links: Array<Record<string, unknown>>, accounts: Array<Record<string, unknown>>, drafts: Array<Record<string, unknown>> = []) {
   return {
     openFinanceLink: { findMany: vi.fn(async () => links) },
     account: { findMany: vi.fn(async () => accounts) },
+    capturedNotification: { findMany: vi.fn(async () => drafts) },
   } as unknown as BalancesDb;
 }
 
@@ -30,9 +31,9 @@ describe('balanceChecks', () => {
     );
 
     expect(await balanceChecks({ db, householdId: HH })).toEqual([
-      { prumoAccountId: 'acc-w', accountName: 'Carteira Exemplo', bankCents: 40140, prumoCents: 40090, diffCents: 50, estimated: true, toleranceCents: 100, alert: false, at: AT.toISOString() },
-      { prumoAccountId: 'acc-b', accountName: 'Banco Exemplo', bankCents: 0, prumoCents: -1, diffCents: 1, estimated: false, toleranceCents: 0, alert: true, at: AT.toISOString() },
-      { prumoAccountId: 'acc-c', accountName: 'Outro Banco', bankCents: 1200, prumoCents: 1200, diffCents: 0, estimated: false, toleranceCents: 0, alert: false, at: AT.toISOString() },
+      { prumoAccountId: 'acc-w', accountName: 'Carteira Exemplo', bankCents: 40140, prumoCents: 40090, diffCents: 50, estimated: true, toleranceCents: 100, alert: false, at: AT.toISOString(), pendingCents: 0 },
+      { prumoAccountId: 'acc-b', accountName: 'Banco Exemplo', bankCents: 0, prumoCents: -1, diffCents: 1, estimated: false, toleranceCents: 0, alert: true, at: AT.toISOString(), pendingCents: 0 },
+      { prumoAccountId: 'acc-c', accountName: 'Outro Banco', bankCents: 1200, prumoCents: 1200, diffCents: 0, estimated: false, toleranceCents: 0, alert: false, at: AT.toISOString(), pendingCents: 0 },
     ]);
   });
 
@@ -42,5 +43,25 @@ describe('balanceChecks', () => {
       [{ id: 'acc-w', name: 'Carteira Exemplo', totalBalance: '391.40' }],
     );
     expect((await balanceChecks({ db, householdId: HH }))[0]).toMatchObject({ diffCents: 1000, alert: true });
+  });
+});
+
+describe('balanceChecks: drafts waiting in the box (27/11/2026)', () => {
+  it('each account says how much its pending Open Finance drafts add up to (income +, expense -)', async () => {
+    const db = fakeDb(
+      [{ accountId: 'acc-w', bankBalance: '1130.20', bankBalanceAt: AT, bankBalanceEstimated: true }],
+      [{ id: 'acc-w', name: 'Carteira Exemplo', totalBalance: '374.20' }],
+      [
+        { parsed: { type: 'INCOME', amountCents: 75600, accountId: 'acc-w' } },
+        { parsed: { type: 'EXPENSE', amountCents: 600, accountId: 'acc-w' } },
+        { parsed: { type: 'INCOME', amountCents: 999, accountId: 'acc-other' } },
+        { parsed: null },
+      ],
+    );
+    const [check] = await balanceChecks({ db, householdId: HH });
+    expect(check).toMatchObject({ diffCents: 75600, pendingCents: 75000, alert: true });
+    expect(db.capturedNotification.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { householdId: HH, package: 'open-finance', status: 'PENDING' } }),
+    );
   });
 });
