@@ -8,15 +8,16 @@
  *   never a draft. The savings side carries the savings' name; the account side has none.
  * - A payment made with money just withdrawn from an ignored savings (e.g. one that stays outside Prumo), or money
  *   received and put straight into one, is "outside": not Prumo's money.
+ * - The same value entering and leaving the account on the same day is a "passthrough" (round trips, money passed on).
  * - Everything else is a "candidate" (a draft unless Prumo already has it).
  *
  * Matching (bank values are exact, so to the cent): an outflow of account P is an EXPENSE of P or a TRANSFER out of P;
- * an inflow an INCOME of P or a TRANSFER into P; up to 3 days apart, closest date first, one to one. A pair of lines
+ * an inflow an INCOME of P or a TRANSFER into P; up to 3 days apart (else the same month), closest date first, one to one. A pair of lines
  * between two linked accounts is matched as one TRANSFER between them.
  */
 import type { PluggyTransaction } from './pluggy.client.js';
 
-export type LineKind = 'yield' | 'savings' | 'outside' | 'candidate';
+export type LineKind = 'yield' | 'savings' | 'outside' | 'passthrough' | 'candidate';
 
 export interface BankLine {
   /** Pluggy transaction id. */
@@ -53,11 +54,15 @@ export interface PrumoTx {
 }
 
 export const MATCH_DAYS = 3;
-/** A withdrawal from a savings may be smaller than the payment (the rest was already in the account): up to R$ 1. */
+/**
+ * A withdrawal from a savings may be a little smaller than the payment (the rest was already in the account, up to
+ * R$ 1) or larger (the rest stays in the account).
+ */
 const SAVINGS_SLACK_CENTS = 100;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const YIELD = /^rendimentos?\b/i;
+// Exactly "Rendimentos": fund income ("RENDIMENTOS DE CLIENTES ...") is not the savings yield.
+const YIELD = /^rendimentos?$/i;
 const SAVINGS = /^dinheiro (retirado|reservado)\b\s*(.*)$/i;
 
 const fold = (text: string): string =>
@@ -94,17 +99,18 @@ export function classifyAccount(
   const sourceFor = (line: BankLine): BankLine | undefined => {
     const want = line.cents < 0 ? /^dinheiro retirado/i : /^dinheiro reservado/i;
     const size = Math.abs(line.cents);
-    return lines.find(
-      (s) =>
-        s.kind === 'savings' &&
-        s.savingsName &&
-        !used.has(s.id) &&
-        s.date === line.date &&
-        want.test(s.description) &&
-        Math.sign(s.cents) === -Math.sign(line.cents) &&
-        Math.abs(s.cents) <= size &&
-        Math.abs(s.cents) >= size - SAVINGS_SLACK_CENTS,
-    );
+    return lines
+      .filter(
+        (s) =>
+          s.kind === 'savings' &&
+          s.savingsName &&
+          !used.has(s.id) &&
+          s.date === line.date &&
+          want.test(s.description) &&
+          Math.sign(s.cents) === -Math.sign(line.cents) &&
+          Math.abs(s.cents) >= size - SAVINGS_SLACK_CENTS,
+      )
+      .sort((a, b) => Math.abs(Math.abs(a.cents) - size) - Math.abs(Math.abs(b.cents) - size))[0];
   };
 
   for (const line of lines) {
@@ -114,6 +120,16 @@ export function classifyAccount(
     used.add(source.id);
     line.savingsName = source.savingsName;
     if (ignored.has(fold(source.savingsName!))) line.kind = 'outside';
+  }
+
+  // Pass-through: the same value enters and leaves the account on the same day (a round trip between own accounts, or
+  // money received from someone and sent on). It changes nothing in the balance: both lines are left out.
+  for (const inn of lines) {
+    if (inn.kind !== 'candidate' || inn.cents <= 0) continue;
+    const out = lines.find((o) => o.kind === 'candidate' && o.date === inn.date && o.cents === -inn.cents);
+    if (!out) continue;
+    inn.kind = 'passthrough';
+    out.kind = 'passthrough';
   }
   return lines;
 }
@@ -150,10 +166,11 @@ export function matchWithPrumo(input: {
   to: string;
 }) {
   const used = new Set<string>();
+  // Up to 3 days first; else the same value in the same month (items imported from the spreadsheet sit on day 1).
+  const byDistance = (date: string) => (a: PrumoTx, b: PrumoTx) => Math.abs(dayDiff(a.date, date)) - Math.abs(dayDiff(b.date, date));
   const closest = (date: string, fits: (p: PrumoTx) => boolean): PrumoTx | undefined =>
-    input.prumo
-      .filter((p) => !used.has(p.id) && Math.abs(dayDiff(p.date, date)) <= MATCH_DAYS && fits(p))
-      .sort((a, b) => Math.abs(dayDiff(a.date, date)) - Math.abs(dayDiff(b.date, date)))[0];
+    input.prumo.filter((p) => !used.has(p.id) && Math.abs(dayDiff(p.date, date)) <= MATCH_DAYS && fits(p)).sort(byDistance(date))[0] ??
+    input.prumo.filter((p) => !used.has(p.id) && p.date.slice(0, 7) === date.slice(0, 7) && fits(p)).sort(byDistance(date))[0];
 
   const matchedTransfers: Array<{ transfer: OwnTransfer; transactionId: string }> = [];
   const missingTransfers: OwnTransfer[] = [];

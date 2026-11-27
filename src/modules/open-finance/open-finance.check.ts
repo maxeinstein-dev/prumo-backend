@@ -18,6 +18,7 @@ export interface CheckDb {
   openFinanceLink: {
     findMany(args: unknown): Promise<Array<{ pluggyItemId: string; pluggyAccountId: string | null; accountId: string | null }>>;
   };
+  account: { findMany(args: unknown): Promise<Array<{ id: string; type: string }>> };
   transaction: {
     findMany(args: unknown): Promise<
       Array<{
@@ -40,7 +41,9 @@ type LineView = Pick<BankLine, 'id' | 'date' | 'cents' | 'description' | 'saving
 export interface AccountCheck {
   pluggyAccountId: string;
   prumoAccountId: string;
-  counts: { yield: number; savings: number; outside: number; matched: number; missing: number };
+  counts: { yield: number; savings: number; outside: number; passthrough: number; matched: number; missing: number };
+  /** The savings' yield summed per month (the import makes one draft per month). */
+  yieldsByMonth: Array<{ month: string; cents: number }>;
   missing: LineView[];
   outside: LineView[];
   onlyInPrumo: Array<{ id: string; type: string; date: string; cents: number; description: string | null; paid: boolean }>;
@@ -65,6 +68,8 @@ export interface CheckReport {
   /** Every savings name seen, so the user can tell which ones to ignore. */
   savingsNames: string[];
   cardsNotChecked: number;
+  /** Accounts linked to an investment account of Prumo: checked by the investments part (L5), not here. */
+  investmentsNotChecked: number;
 }
 
 const ymd = (date: Date): string => date.toISOString().slice(0, 10);
@@ -102,6 +107,16 @@ export async function checkOpenFinance(input: {
   const items: CheckReport['items'] = [];
   const lines: BankLine[] = [];
   let cardsNotChecked = 0;
+  let investmentsNotChecked = 0;
+  const prumoTypes = new Map(
+    (links.length
+      ? await input.db.account.findMany({
+          where: { id: { in: [...new Set(links.map((l) => l.accountId))] }, householdId: input.householdId },
+          select: { id: true, type: true },
+        })
+      : []
+    ).map((a) => [a.id, a.type]),
+  );
 
   for (const itemId of [...new Set(links.map((l) => l.pluggyItemId))]) {
     let accounts;
@@ -123,6 +138,10 @@ export async function checkOpenFinance(input: {
         cardsNotChecked++;
         continue;
       }
+      if (prumoTypes.get(link.accountId) === 'INVESTMENT') {
+        investmentsNotChecked++;
+        continue;
+      }
       const transactions = await input.client.listTransactions(account.id, { from, to });
       lines.push(...classifyAccount(transactions, { prumoAccountId: link.accountId, ignoredSavings: input.ignoredSavings }));
     }
@@ -130,7 +149,7 @@ export async function checkOpenFinance(input: {
 
   const prumoAccounts = [...new Set(lines.map((l) => l.prumoAccountId))];
   if (prumoAccounts.length === 0) {
-    return { from, to, items, accounts: [], transfers: { matched: 0, missing: [] }, savingsNames: [], cardsNotChecked };
+    return { from, to, items, accounts: [], transfers: { matched: 0, missing: [] }, savingsNames: [], cardsNotChecked, investmentsNotChecked };
   }
 
   const margin = MATCH_DAYS * DAY_MS;
@@ -170,9 +189,11 @@ export async function checkOpenFinance(input: {
           yield: mine.filter((x) => x.kind === 'yield').length,
           savings: mine.filter((x) => x.kind === 'savings').length,
           outside: mine.filter((x) => x.kind === 'outside').length,
+          passthrough: mine.filter((x) => x.kind === 'passthrough').length,
           matched: result.matched.filter((m) => own(m.line)).length,
           missing: result.missing.filter(own).length,
         },
+        yieldsByMonth: yieldsByMonth(mine),
         missing: result.missing.filter(own).map(view),
         outside: mine.filter((x) => x.kind === 'outside').map(view),
         onlyInPrumo: result.onlyInPrumo
@@ -199,5 +220,16 @@ export async function checkOpenFinance(input: {
     },
     savingsNames: [...new Set(lines.map((l) => l.savingsName).filter((n): n is string => !!n))].sort((a, b) => a.localeCompare(b, 'pt-BR')),
     cardsNotChecked,
+    investmentsNotChecked,
   };
+}
+
+function yieldsByMonth(lines: readonly BankLine[]): Array<{ month: string; cents: number }> {
+  const sums = new Map<string, number>();
+  for (const line of lines) {
+    if (line.kind !== 'yield') continue;
+    const month = line.date.slice(0, 7);
+    sums.set(month, (sums.get(month) ?? 0) + line.cents);
+  }
+  return [...sums].sort(([a], [b]) => a.localeCompare(b)).map(([month, cents]) => ({ month, cents }));
 }
