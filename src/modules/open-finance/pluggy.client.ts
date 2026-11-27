@@ -76,7 +76,30 @@ export interface PluggyItem {
   connectorName: string | null;
 }
 
+export interface PluggyInvestment {
+  id: string;
+  name: string;
+  /** Ticker for exchange-traded assets (or a fund's CNPJ); null when Pluggy sends none. */
+  code: string | null;
+  /** 'EQUITY' | 'ETF' | 'FIXED_INCOME' | 'MUTUAL_FUND' | 'COE' | 'SECURITY' | 'OTHER' */
+  type: string;
+  /** e.g. 'STOCK', 'REAL_ESTATE_FUND', 'BDR', 'LCA', 'CDB', 'TREASURY' */
+  subtype: string | null;
+  /** Current net value of the position, in reais (Pluggy's `balance`). */
+  balance: number;
+  quantity: number | null;
+  /** Unit value on `date`. */
+  value: number | null;
+  /** 'YYYY-MM-DD' of the value, when Pluggy sends it. */
+  date: string | null;
+  dueDate: string | null;
+  /** 'ACTIVE' | 'PENDING' | 'TOTAL_WITHDRAWAL' */
+  status: string | null;
+}
+
 export interface PluggyClient {
+  /** GET /investments?itemId=: the investments of a connection (a broker's portfolio). */
+  listInvestments(itemId: string): Promise<PluggyInvestment[]>;
   /** GET /items/:id: the status of a connection (an expired authorization reads as empty lists, not as an error). */
   getItem(itemId: string): Promise<PluggyItem>;
   /** Trades the keys for an API key: 'refused' when Pluggy turns them down (e.g. CLIENT_SECRET_EXPIRED). */
@@ -121,6 +144,31 @@ function toAccount(raw: Json): PluggyAccount {
     number: str(raw.number),
     balance: num(raw.balance),
     currencyCode: str(raw.currencyCode) ?? 'BRL',
+  };
+}
+
+const dayOf = (value: unknown): string | null => {
+  const text = str(value);
+  return text && /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : null;
+};
+
+function toInvestment(raw: Json): PluggyInvestment {
+  const id = str(raw.id);
+  const type = str(raw.type);
+  const balance = num(raw.balance);
+  if (!id || !type || balance === null) throw new PluggyError('invalid_response');
+  return {
+    id,
+    name: str(raw.name) ?? '',
+    code: str(raw.code),
+    type,
+    subtype: str(raw.subtype),
+    balance,
+    quantity: num(raw.quantity),
+    value: num(raw.value),
+    date: dayOf(raw.date),
+    dueDate: dayOf(raw.dueDate),
+    status: str(raw.status),
   };
 }
 
@@ -236,6 +284,18 @@ export function createPluggyClient(options: PluggyOptions): PluggyClient {
         consentExpiresAt: str(body?.consentExpiresAt),
         connectorName: str((body?.connector as Json | undefined)?.name),
       };
+    },
+
+    async listInvestments(itemId) {
+      const investments: PluggyInvestment[] = [];
+      for (let page = 1; page <= maxPages; page++) {
+        const query = new URLSearchParams({ itemId, page: String(page), pageSize: '500' });
+        const body = await get(`/investments?${query}`);
+        investments.push(...results(body).map(toInvestment));
+        const totalPages = num((body as Json).totalPages) ?? 1;
+        if (page >= totalPages) return investments;
+      }
+      throw new PluggyError('invalid_response');
     },
 
     async listAccounts(itemId) {
