@@ -67,3 +67,22 @@ describe('splitYields', () => {
     expect(splitYields([line('2026-11-21', 100, 'Rendimentos', 'yield')], [])).toEqual([{ month: '2026-11', cents: 100, prumoCents: null }]);
   });
 });
+
+describe('estimatedSavingsBalance (P25 L3)', () => {
+  it('the registered balance plus its named moves plus its share of each day\'s yield after the registered day', async () => {
+    const { estimatedSavingsBalance } = await import('./open-finance.savings.js');
+    const lines = [
+      line('2026-11-19', 500, 'Rendimentos', 'yield'), // before the registered day: already in the balance
+      line('2026-11-21', 1920, 'Rendimentos', 'yield'), // 400 of 45.400 -> 17 cents are ours
+      line('2026-11-22', 5000, 'Dinheiro retirado Cofrinho Azul', 'savings', 'Cofrinho Azul'), // -50,00
+      line('2026-11-23', 1000, 'Rendimentos', 'yield'), // 350 of 45.350 -> 8 cents
+    ];
+    expect(estimatedSavingsBalance(OURS, '2026-11-23', lines, [OURS, THEIRS])).toBe(40000 + 17 - 5000 + 8);
+  });
+
+  it('unknown when the savings (or any other) has no registered balance', async () => {
+    const { estimatedSavingsBalance } = await import('./open-finance.savings.js');
+    expect(estimatedSavingsBalance({ ...OURS, approxCents: null, asOf: null }, '2026-11-23', [], [OURS])).toBeNull();
+    expect(estimatedSavingsBalance(OURS, '2026-11-23', [line('2026-11-21', 100, 'Rendimentos', 'yield')], [OURS, { ...THEIRS, approxCents: null, asOf: null }])).toBeNull();
+  });
+});
