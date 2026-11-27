@@ -102,12 +102,12 @@ describe('importOpenFinance', () => {
     const matchedId = tid();
     const tx = {
       [PW]: [
-        t(PW, '2026-11-25', -22.5, 'Pix enviado Loja', matchedId), // Prumo has it
+        t(PW, '2026-11-25', -26.5, 'Pix enviado Loja', matchedId), // Prumo has it
         t(PW, '2026-11-26', -12, 'Pix enviado Padaria'), // missing, but before the start: no draft
-        t(PW, '2026-12-02', -6, 'Pagamento com Pix Feira'), // missing, from the start on: draft
+        t(PW, '2026-12-02', -7, 'Pagamento com Pix Feira'), // missing, from the start on: draft
       ],
     };
-    const prumo = [{ id: 'p-1', type: 'EXPENSE', accountId: ACC_W, fromAccountId: null, toAccountId: null, amount: '22.50', date: new Date('2026-11-25T00:00:00Z'), description: 'Loja', paid: true }];
+    const prumo = [{ id: 'p-1', type: 'EXPENSE', accountId: ACC_W, fromAccountId: null, toAccountId: null, amount: '26.50', date: new Date('2026-11-25T00:00:00Z'), description: 'Loja', paid: true }];
     const { db, state } = fakeDb({ prumo });
 
     const result = await importOpenFinance({ householdId: HH, db, client: fakeClient(tx), now: NOW });
@@ -123,7 +123,7 @@ describe('importOpenFinance', () => {
       text: 'Pagamento com Pix Feira',
       postedAt: new Date('2026-12-02T15:00:00.000Z'),
       status: 'PENDING',
-      parsed: { kind: 'PIX_OUT', type: 'EXPENSE', amountCents: 600, amount: 6, description: 'Pagamento com Pix Feira', accountId: ACC_W, source: 'open-finance' },
+      parsed: { kind: 'PIX_OUT', type: 'EXPENSE', amountCents: 700, amount: 7, description: 'Pagamento com Pix Feira', accountId: ACC_W, source: 'open-finance' },
     });
     expect(state.captures[0].dedupKey.length).toBeLessThanOrEqual(40);
     expect(result).toMatchObject({ refs: 1, drafts: 1, transferDrafts: 0, yieldDrafts: 0 });
@@ -132,8 +132,8 @@ describe('importOpenFinance', () => {
 
   it('a move between own accounts after the start becomes one transfer draft: two captures with the same pairKey', async () => {
     const tx = {
-      [PW]: [t(PW, '2026-12-01', -750, 'Pix enviado Titular')],
-      [PB]: [t(PB, '2026-12-01', 750, 'Transferência recebida Titular')],
+      [PW]: [t(PW, '2026-12-01', -680, 'Pix enviado Titular')],
+      [PB]: [t(PB, '2026-12-01', 680, 'Transferência recebida Titular')],
     };
     const { db, state } = fakeDb({ importFrom: '2026-11-27' });
 
@@ -141,8 +141,8 @@ describe('importOpenFinance', () => {
 
     expect(result).toMatchObject({ drafts: 0, transferDrafts: 1 });
     const [out, inn] = state.captures;
-    expect(out.parsed).toMatchObject({ kind: 'PIX_OUT', type: 'EXPENSE', amountCents: 75000, accountId: ACC_W });
-    expect(inn.parsed).toMatchObject({ kind: 'PIX_IN', type: 'INCOME', amountCents: 75000, accountId: ACC_B, warning: 'POSSIBLE_OWN_TRANSFER' });
+    expect(out.parsed).toMatchObject({ kind: 'PIX_OUT', type: 'EXPENSE', amountCents: 68000, accountId: ACC_W });
+    expect(inn.parsed).toMatchObject({ kind: 'PIX_IN', type: 'INCOME', amountCents: 68000, accountId: ACC_B, warning: 'POSSIBLE_OWN_TRANSFER' });
     expect(out.parsed.pairKey).toBeTruthy();
     expect(inn.parsed.pairKey).toBe(out.parsed.pairKey);
     expect(inn.postedAt).toEqual(out.postedAt);
@@ -244,7 +244,7 @@ describe('importOpenFinance', () => {
   });
 
   it('an item with expired authorization is not read: its links keep the error, nothing is drafted for it', async () => {
-    const tx = { [PW]: [t(PW, '2026-12-01', -6, 'Pix enviado Feira')] };
+    const tx = { [PW]: [t(PW, '2026-12-01', -7, 'Pix enviado Feira')] };
     const { db, state } = fakeDb({ importFrom: '2026-11-27' });
 
     const result = await importOpenFinance({ householdId: HH, db, client: fakeClient(tx, [ITEM_W]), now: NOW });

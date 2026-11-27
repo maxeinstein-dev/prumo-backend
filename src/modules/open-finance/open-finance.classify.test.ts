@@ -40,12 +40,12 @@ describe('classifyAccount', () => {
   it('a payment made right after a withdrawal from an ignored savings is outside Prumo (accents and case do not matter)', () => {
     const lines = classifyAccount(
       [
-        tx('2026-11-10', 300, 'Dinheiro retirado Cofrinho Pai'),
-        tx('2026-11-10', -300, 'Dinheiro retirado'),
-        tx('2026-11-10', -300, 'Pix enviado Fulano Exemplo'),
-        tx('2026-11-11', -30, 'Pix enviado Outra Loja'),
-        tx('2026-11-11', 29.5, 'Dinheiro retirado Cofrinho Azul'),
-        tx('2026-11-11', -29.5, 'Dinheiro retirado'),
+        tx('2026-11-10', 260, 'Dinheiro retirado Cofrinho Pai'),
+        tx('2026-11-10', -260, 'Dinheiro retirado'),
+        tx('2026-11-10', -260, 'Pix enviado Fulano Exemplo'),
+        tx('2026-11-11', -41, 'Pix enviado Outra Loja'),
+        tx('2026-11-11', 40.5, 'Dinheiro retirado Cofrinho Azul'),
+        tx('2026-11-11', -40.5, 'Dinheiro retirado'),
       ],
       { prumoAccountId: P_MAIN, ignoredSavings: ['cofrinho pái'] },
     );
@@ -58,9 +58,9 @@ describe('classifyAccount', () => {
   it('money received and put straight into an ignored savings is outside Prumo too', () => {
     const lines = classifyAccount(
       [
-        tx('2026-11-17', 1983.84, 'Pix recebido Fulana Exemplo'),
-        tx('2026-11-17', 1983.84, 'Dinheiro reservado'),
-        tx('2026-11-17', -1983.84, 'Dinheiro reservado Cofrinho Pai'),
+        tx('2026-11-17', 1871.2, 'Pix recebido Fulana Exemplo'),
+        tx('2026-11-17', 1871.2, 'Dinheiro reservado'),
+        tx('2026-11-17', -1871.2, 'Dinheiro reservado Cofrinho Pai'),
       ],
       { prumoAccountId: P_MAIN, ignoredSavings: ['Cofrinho Pai'] },
     );
@@ -82,9 +82,9 @@ const line = (over: Partial<BankLine>): BankLine => ({
 
 describe('pairOwnTransfers', () => {
   it('an outflow and an inflow of the same value between two linked accounts (same day or next) become one transfer', () => {
-    const out = line({ cents: -75000, prumoAccountId: P_MAIN, pluggyAccountId: 'pa' });
-    const inn = line({ cents: 75000, prumoAccountId: P_OTHER, pluggyAccountId: 'pb', date: '2026-11-17' });
-    const lonely = line({ cents: 75000, prumoAccountId: P_MAIN, pluggyAccountId: 'pa' });
+    const out = line({ cents: -68000, prumoAccountId: P_MAIN, pluggyAccountId: 'pa' });
+    const inn = line({ cents: 68000, prumoAccountId: P_OTHER, pluggyAccountId: 'pb', date: '2026-11-17' });
+    const lonely = line({ cents: 68000, prumoAccountId: P_MAIN, pluggyAccountId: 'pa' });
     const { transfers, rest } = pairOwnTransfers([out, inn, lonely]);
     expect(transfers).toEqual([{ out, in: inn }]);
     expect(rest).toEqual([lonely]);
@@ -114,10 +114,10 @@ const prumo = (over: Partial<PrumoTx>): PrumoTx => ({
 describe('matchWithPrumo', () => {
   it('pairs each bank line with one Prumo transaction of the same account, kind and value, closest date within 3 days', () => {
     const out = line({ cents: -4590, date: '2026-11-16' });
-    const income = line({ cents: 339389, date: '2026-11-05' });
+    const income = line({ cents: 287650, date: '2026-11-05' });
     const far = prumo({ cents: 4590, date: '2026-11-13' });
     const near = prumo({ cents: 4590, date: '2026-11-15' });
-    const salary = prumo({ type: 'INCOME', cents: 339389, date: '2026-11-05' });
+    const salary = prumo({ type: 'INCOME', cents: 287650, date: '2026-11-05' });
     const wrongAccount = prumo({ cents: 4590, accountId: P_OTHER, date: '2026-11-16' });
 
     const result = matchWithPrumo({ lines: [out, income], transfers: [], prumo: [far, near, salary, wrongAccount], from: '2026-11-01', to: '2026-11-26' });
@@ -131,16 +131,16 @@ describe('matchWithPrumo', () => {
   });
 
   it('an outflow may be a transfer out of the account (e.g. paying the card bill) and an inflow a transfer in', () => {
-    const bill = line({ cents: -192255 });
-    const t = prumo({ type: 'TRANSFER', accountId: null, fromAccountId: P_MAIN, toAccountId: 'card', cents: 192255 });
+    const bill = line({ cents: -143380 });
+    const t = prumo({ type: 'TRANSFER', accountId: null, fromAccountId: P_MAIN, toAccountId: 'card', cents: 143380 });
     const result = matchWithPrumo({ lines: [bill], transfers: [], prumo: [t], from: '2026-11-01', to: '2026-11-26' });
     expect(result.matched).toEqual([{ line: bill, transactionId: t.id }]);
   });
 
   it('a pair between own accounts matches one Prumo transfer between the two accounts; else it is missing as a transfer', () => {
-    const out = line({ cents: -75000, prumoAccountId: P_MAIN });
-    const inn = line({ cents: 75000, prumoAccountId: P_OTHER });
-    const t = prumo({ type: 'TRANSFER', accountId: null, fromAccountId: P_MAIN, toAccountId: P_OTHER, cents: 75000 });
+    const out = line({ cents: -68000, prumoAccountId: P_MAIN });
+    const inn = line({ cents: 68000, prumoAccountId: P_OTHER });
+    const t = prumo({ type: 'TRANSFER', accountId: null, fromAccountId: P_MAIN, toAccountId: P_OTHER, cents: 68000 });
 
     const ok = matchWithPrumo({ lines: [], transfers: [{ out, in: inn }], prumo: [t], from: '2026-11-01', to: '2026-11-26' });
     expect(ok.matchedTransfers).toEqual([{ transfer: { out, in: inn }, transactionId: t.id }]);
@@ -150,8 +150,8 @@ describe('matchWithPrumo', () => {
   });
 
   it('a value that differs by one cent is not the same transaction (bank lines match to the cent)', () => {
-    const out = line({ cents: -26217 });
-    const result = matchWithPrumo({ lines: [out], transfers: [], prumo: [prumo({ cents: 26216 })], from: '2026-11-01', to: '2026-11-26' });
+    const out = line({ cents: -31533 });
+    const result = matchWithPrumo({ lines: [out], transfers: [], prumo: [prumo({ cents: 31532 })], from: '2026-11-01', to: '2026-11-26' });
     expect(result.missing).toEqual([out]);
   });
 
@@ -179,9 +179,9 @@ describe('rules adjusted after the first real check (27/11/2026)', () => {
   it('a payment from an ignored savings is outside even when more was withdrawn than paid (the rest stays)', () => {
     const lines = classifyAccount(
       [
-        tx('2026-11-12', 350, 'Dinheiro retirado Cofrinho Pai'),
-        tx('2026-11-12', -350, 'Dinheiro retirado'),
-        tx('2026-11-12', -320, 'Pix enviado Fulano Exemplo'),
+        tx('2026-11-12', 410, 'Dinheiro retirado Cofrinho Pai'),
+        tx('2026-11-12', -410, 'Dinheiro retirado'),
+        tx('2026-11-12', -380, 'Pix enviado Fulano Exemplo'),
       ],
       { prumoAccountId: P_MAIN, ignoredSavings: ['Cofrinho Pai'] },
     );
@@ -191,11 +191,11 @@ describe('rules adjusted after the first real check (27/11/2026)', () => {
   it('money that enters and leaves the same account on the same day with the same value is a pass-through (both lines)', () => {
     const lines = classifyAccount(
       [
-        tx('2026-11-16', 750, 'Transferência recebida Fulana'),
-        tx('2026-11-16', -750, 'Transferência enviada pelo Pix'),
-        tx('2026-11-16', 10.01, 'Pix recebido Titular'),
-        tx('2026-11-16', -10, 'Pix enviado Titular'),
-        tx('2026-11-17', -750, 'Transferência enviada pelo Pix'),
+        tx('2026-11-16', 680, 'Transferência recebida Fulana'),
+        tx('2026-11-16', -680, 'Transferência enviada pelo Pix'),
+        tx('2026-11-16', 13.02, 'Pix recebido Titular'),
+        tx('2026-11-16', -13, 'Pix enviado Titular'),
+        tx('2026-11-17', -680, 'Transferência enviada pelo Pix'),
       ],
       { prumoAccountId: P_MAIN, ignoredSavings: [] },
     );
@@ -203,9 +203,9 @@ describe('rules adjusted after the first real check (27/11/2026)', () => {
   });
 
   it('matching falls back to the same value in the same month when no Prumo transaction is within 3 days', () => {
-    const bill = line({ cents: -12425, date: '2026-11-05' });
-    const monthly = prumo({ cents: 12425, date: '2026-11-01' });
-    const otherMonth = prumo({ cents: 12425, date: '2026-10-01' });
+    const bill = line({ cents: -11840, date: '2026-11-05' });
+    const monthly = prumo({ cents: 11840, date: '2026-11-01' });
+    const otherMonth = prumo({ cents: 11840, date: '2026-10-01' });
     const result = matchWithPrumo({ lines: [bill], transfers: [], prumo: [otherMonth, monthly], from: '2026-10-28', to: '2026-11-27' });
     expect(result.matched).toEqual([{ line: bill, transactionId: monthly.id }]);
   });
@@ -222,7 +222,7 @@ describe('rules adjusted after the first real check (27/11/2026)', () => {
 describe('pass-through, second real check (27/11/2026)', () => {
   it('money in and out of the same account on consecutive days is a pass-through too (same day first)', () => {
     const lines = classifyAccount(
-      [tx('2026-10-28', 300, 'Transferência recebida'), tx('2026-10-29', -300, 'Transferência enviada pelo Pix'), tx('2026-10-31', -300, 'Transferência enviada pelo Pix')],
+      [tx('2026-10-28', 260, 'Transferência recebida'), tx('2026-10-29', -260, 'Transferência enviada pelo Pix'), tx('2026-10-31', -260, 'Transferência enviada pelo Pix')],
       { prumoAccountId: P_MAIN, ignoredSavings: [] },
     );
     expect(lines.map((l) => l.kind)).toEqual(['passthrough', 'passthrough', 'candidate']);
