@@ -134,7 +134,9 @@ describe.skipIf(!adminUrl)('aporte counts as invested (P24), on a real database'
     // 5. The money moves once, like any transfer: out of the bank, into the broker, nothing else
     expect(after.balances[bank]![2]).toBe(before.balances[bank]![2] - 250);
     expect(after.balances[broker]![2]).toBe(before.balances[broker]![2] + 250);
-    expect(after.balances[bank]![1]).toBe(before.balances[bank]![1]);
+    // total_balance moves with available_balance in both accounts (total = available + allocated)
+    expect(after.balances[bank]![1]).toBe(before.balances[bank]![1] - 250);
+    expect(after.balances[broker]![1]).toBe(before.balances[broker]![1] + 250);
     expect(after.balances[bank2]).toEqual(before.balances[bank2]);
 
     // The budget alert sees the same 250 (it crossed 80% of 290)
