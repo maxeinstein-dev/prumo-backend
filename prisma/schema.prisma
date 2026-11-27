@@ -92,6 +92,7 @@ model Household {
   categoryGroups        CategoryGroup[]
   categoryGroupAssignments CategoryGroupAssignment[]
   openFinanceLinks      OpenFinanceLink[]
+  openFinanceSavings    OpenFinanceSavings[]
 
   // When the default spending groups (Casa, Pessoal, Dia a dia) were created, on demand, once. Null = never: a household
   // that later deletes every group does not get the defaults back.
@@ -1325,4 +1326,24 @@ model OpenFinanceLink {
   @@unique([householdId, pluggyAccountId])
   @@index([householdId, pluggyItemId])
   @@map("open_finance_links")
+}
+
+// P25 L2b1: the savings ("cofrinhos") of the linked bank accounts. Pluggy's daily yield lines do not say which savings
+// they come from; each one keeps an approximate balance (registered by the user on a day, kept up to date by its named
+// moves) so the yield can be split. inPrumo = false: money outside Prumo (payments from it are ignored).
+model OpenFinanceSavings {
+  id            String    @id @default(uuid()) @db.Uuid
+  householdId   String    @map("household_id") @db.Uuid
+  name          String    @db.VarChar(80)
+  aliases       String[]  @default([])
+  inPrumo       Boolean   @default(true) @map("in_prumo")
+  approxBalance Decimal?  @map("approx_balance") @db.Decimal(15, 2)
+  balanceAsOf   DateTime? @map("balance_as_of") @db.Date
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, name])
+  @@map("open_finance_savings")
 }

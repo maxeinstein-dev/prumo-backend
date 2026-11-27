@@ -6,12 +6,31 @@ import { AppError } from '../../shared/errors/app-error.js';
 import { authMiddleware } from '../../shared/middleware/auth.middleware.js';
 import { ensurePersonalHousehold, requireEditor, requireHouseholdMember } from '../../shared/middleware/authorization.middleware.js';
 import { checkOpenFinance, type CheckDb } from './open-finance.check.js';
+import { listSavings, replaceSavings, type SavingsDb } from './open-finance.savings.service.js';
 import { addItem, listLinks, removeItem, replaceAccountLinks, replaceItem, type LinksDb } from './open-finance.links.js';
 import { previewOpenFinance, type PreviewDb } from './open-finance.preview.js';
 import { createPluggyClient, PluggyError } from './pluggy.client.js';
 
 const previewQuerySchema = z.object({ householdId: z.string().uuid().optional() });
 const householdQuerySchema = previewQuerySchema;
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const replaceSavingsSchema = z.object({
+  savings: z
+    .array(
+      z
+        .object({
+          name: z.string().trim().min(1).max(80),
+          aliases: z.array(z.string().max(80)).max(10).optional(),
+          inPrumo: z.boolean(),
+          approxBalance: z.number().finite().min(0).max(1e12).nullable().optional(),
+          balanceAsOf: z.string().regex(YMD).nullable().optional(),
+        })
+        .refine((s) => (s.approxBalance ?? null) === null === ((s.balanceAsOf ?? null) === null), {
+          message: 'approxBalance and balanceAsOf go together',
+        }),
+    )
+    .max(20),
+});
 const checkQuerySchema = previewQuerySchema.extend({ ignoreSavings: z.string().max(500).optional() });
 const replaceLinksSchema = z.object({
   links: z
@@ -205,5 +224,37 @@ export async function openFinanceRoutes(app: FastifyInstance) {
       checkOpenFinance({ householdId, db: prisma as unknown as CheckDb, client: clientFromEnv(), ignoredSavings }),
     );
     return reply.send({ success: true, data });
+  });
+
+  /** GET /open-finance/savings : the household's savings (cofrinhos) register. */
+  app.get('/savings', {
+    schema: {
+      description: 'The savings (cofrinhos) of the household: name, aliases, whether it is Prumo money, approximate balance and its day',
+      tags: ['Open Finance'],
+      security: [{ bearerAuth: [] }],
+      response: objectResponse,
+    },
+  }, async (request, reply) => {
+    const query = householdQuerySchema.parse(request.query);
+    const householdId = query.householdId ?? await ensurePersonalHousehold(request);
+    await requireHouseholdMember(request, householdId);
+    return reply.send({ success: true, data: { savings: await listSavings(prisma as unknown as SavingsDb, householdId) } });
+  });
+
+  /** PUT /open-finance/savings : replace the savings register (EDITOR+). A repeated name or alias is a 400. */
+  app.put('/savings', {
+    schema: {
+      description: 'Replace the savings (cofrinhos) register of the household (EDITOR+); approxBalance and balanceAsOf go together',
+      tags: ['Open Finance'],
+      security: [{ bearerAuth: [] }],
+      response: objectResponse,
+    },
+  }, async (request, reply) => {
+    const query = householdQuerySchema.parse(request.query);
+    const body = replaceSavingsSchema.parse(request.body);
+    const householdId = query.householdId ?? await ensurePersonalHousehold(request);
+    await requireEditor(request, householdId);
+    await replaceSavings(prisma as unknown as SavingsDb, householdId, body.savings);
+    return reply.send({ success: true, data: { savings: await listSavings(prisma as unknown as SavingsDb, householdId) } });
   });
 }

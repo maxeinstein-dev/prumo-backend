@@ -99,7 +99,17 @@ function fakeDb() {
     { id: ACC_X, type: 'CHECKING' },
     { id: ACC_INV, type: 'INVESTMENT' },
   ]);
-  const db = { openFinanceLink: { findMany: findLinks }, transaction: { findMany: findTx }, account: { findMany: findAccounts } };
+  // The registered savings: the ignored one comes from here (no ?ignoreSavings= needed).
+  const findSavings = vi.fn(async () => [
+    { name: 'Cofrinho Azul', aliases: [], inPrumo: true, approxBalance: '100.00', balanceAsOf: new Date('2026-11-01T00:00:00Z') },
+    { name: 'Cofrinho Pai', aliases: [], inPrumo: false, approxBalance: '900.00', balanceAsOf: new Date('2026-11-01T00:00:00Z') },
+  ]);
+  const db = {
+    openFinanceLink: { findMany: findLinks },
+    transaction: { findMany: findTx },
+    account: { findMany: findAccounts },
+    openFinanceSavings: { findMany: findSavings },
+  };
   return { db: db as unknown as CheckDb, findTx };
 }
 
@@ -108,7 +118,7 @@ describe('checkOpenFinance', () => {
     const { db, findTx } = fakeDb();
     const client = fakeClient();
 
-    const report = await checkOpenFinance({ householdId: HH, db, client, now: NOW, ignoredSavings: ['Cofrinho Pai'] });
+    const report = await checkOpenFinance({ householdId: HH, db, client, now: NOW, ignoredSavings: [] });
 
     expect(report.from).toBe('2026-10-27');
     expect(report.to).toBe('2026-11-26');
@@ -122,7 +132,12 @@ describe('checkOpenFinance', () => {
     const wallet = report.accounts.find((a) => a.pluggyAccountId === PW)!;
     expect(wallet.prumoAccountId).toBe(ACC_W);
     expect(wallet.counts).toEqual({ yield: 3, savings: 4, outside: 1, passthrough: 0, matched: 1, missing: 1 });
-    expect(wallet.yieldsByMonth).toEqual([{ month: '2026-10', cents: 10 }, { month: '2026-11', cents: 55 }]);
+    // Prumo's savings has 100 of 1.000 before the moves (10 %: 1 of 10 cents in October); after 320 left the ignored one
+    // (12th) and 23 left ours (18th), 77 of 657 (11,7 %): 30 -> 4 and 25 -> 3 cents in November.
+    expect(wallet.yieldsByMonth).toEqual([
+      { month: '2026-10', cents: 10, prumoCents: 1 },
+      { month: '2026-11', cents: 55, prumoCents: 7 },
+    ]);
     expect(wallet.missing).toEqual([{ id: expect.any(String), date: '2026-11-05', cents: -12425, description: 'Pagamento com Pix Internet Exemplo', savingsName: null }]);
     expect(wallet.outside).toEqual([expect.objectContaining({ cents: -32000, savingsName: 'Cofrinho Pai' })]);
     expect(wallet.onlyInPrumo).toEqual([{ id: 'p-extra', type: 'EXPENSE', date: '2026-11-10', cents: 9900, description: 'Só no Prumo', paid: false }]);
@@ -148,7 +163,7 @@ describe('checkOpenFinance', () => {
   });
 
   it('with no linked bank account it answers empty and reads no Prumo transaction', async () => {
-    const db = { openFinanceLink: { findMany: vi.fn(async () => [{ pluggyItemId: ITEM_W, pluggyAccountId: null, accountId: null }]) }, transaction: { findMany: vi.fn() }, account: { findMany: vi.fn(async () => []) } };
+    const db = { openFinanceLink: { findMany: vi.fn(async () => [{ pluggyItemId: ITEM_W, pluggyAccountId: null, accountId: null }]) }, transaction: { findMany: vi.fn() }, account: { findMany: vi.fn(async () => []) }, openFinanceSavings: { findMany: vi.fn(async () => []) } };
     const report = await checkOpenFinance({ householdId: HH, db: db as unknown as CheckDb, client: fakeClient(), now: NOW, ignoredSavings: [] });
     expect(report.accounts).toEqual([]);
     expect(db.transaction.findMany).not.toHaveBeenCalled();
