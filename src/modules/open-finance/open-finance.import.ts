@@ -8,8 +8,8 @@
  *   past is only checked, never drafted.
  * - A move between two linked accounts becomes one transfer draft: two captures with the same pairKey (the box offers
  *   them together, see capture-transfer).
- * - The savings' yield becomes one income draft per closed month, with Prumo's share only (open-finance.savings);
- *   never for the month the import started in, nor when the share is unknown.
+ * - The savings' yield becomes one income draft per day it comes in, with Prumo's share only (open-finance.savings),
+ *   from the start of the import on; none when the share is unknown or rounds to zero.
  * - An item whose authorization expired is not read; its links keep the reason in `last_error`.
  *
  * - A line whose notification is still waiting in the box is not drafted (the next run sees it again).
@@ -23,7 +23,7 @@ import { PARSER_VERSION } from '../captures/parsers/index.js';
 import { OPEN_FINANCE_PACKAGE } from '../captures/open-finance-package.js';
 import { analyzeOpenFinance, ymd, type AnalyzeDb } from './open-finance.analyze.js';
 import type { BankLine } from './open-finance.classify.js';
-import { estimatedSavingsBalance, splitYields, type SavingsConfig } from './open-finance.savings.js';
+import { estimatedSavingsBalance, splitYieldsByDay, type SavingsConfig } from './open-finance.savings.js';
 import type { PluggyClient } from './pluggy.client.js';
 
 export const IMPORT_DAYS = 30;
@@ -61,13 +61,8 @@ export function draftKey(lineId: string): string {
 const foldName = (text: string): string =>
   text.normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
 
-const yieldKey = (prumoAccountId: string, month: string) => `of:y:${prumoAccountId.slice(0, 8)}:${month}`;
+const yieldKey = (prumoAccountId: string, date: string) => `of:y:${prumoAccountId.slice(0, 8)}:${date}`;
 const postedAt = (date: string) => new Date(`${date}T15:00:00.000Z`); // noon in Brasília: the bank gives only the day
-
-function lastDayOf(month: string): string {
-  const [y, m] = month.split('-').map(Number);
-  return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
-}
 
 function previousMonthStart(now: Date): string {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 10);
@@ -202,30 +197,30 @@ export async function importOpenFinance(input: {
     });
     transferDrafts++;
   }
-  const currentMonth = today.slice(0, 7);
+  // The savings' yield: one income draft per day it comes in, with Prumo's share (decision of 27/11/2026), from the
+  // start of the import on. None when the share is unknown or rounds to zero.
   for (const link of analysis.readLinks) {
     const start = startOf.get(link.pluggyAccountId)!;
     const mine = analysis.lines.filter((l) => l.pluggyAccountId === link.pluggyAccountId);
-    for (const month of splitYields(mine, savings)) {
-      if (month.month >= currentMonth || `${month.month}-01` < start) continue;
-      if (!month.prumoCents || month.prumoCents <= 0) continue;
-      const key = yieldKey(link.accountId, month.month);
+    for (const day of splitYieldsByDay(mine, savings)) {
+      if (day.date < start || !day.prumoCents || day.prumoCents <= 0) continue;
+      const key = yieldKey(link.accountId, day.date);
       if (knownDrafts.has(key)) continue;
-      const [y, m] = month.month.split('-');
-      const description = `Rendimentos dos cofrinhos em ${m}/${y}`;
+      const [y, m, d] = day.date.split('-');
+      const description = `Rendimento dos cofrinhos em ${d}/${m}/${y}`;
       captures.push({
         dedupKey: key,
         text: description,
-        postedAt: postedAt(lastDayOf(month.month)),
+        postedAt: postedAt(day.date),
         parsed: {
           kind: 'PIX_IN',
           type: 'INCOME',
-          amountCents: month.prumoCents,
-          amount: month.prumoCents / 100,
+          amountCents: day.prumoCents,
+          amount: day.prumoCents / 100,
           description,
           accountId: link.accountId,
           source: 'open-finance',
-          yieldMonth: month.month,
+          yieldDate: day.date,
         },
       });
       yieldDrafts++;
