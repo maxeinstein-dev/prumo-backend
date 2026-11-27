@@ -65,7 +65,20 @@ export interface PluggyTransaction {
   status: string | null;
 }
 
+export interface PluggyItem {
+  id: string;
+  /** e.g. 'UPDATED', 'UPDATING', 'OUTDATED', 'LOGIN_ERROR', 'WAITING_USER_INPUT' */
+  status: string;
+  /** e.g. 'SUCCESS', 'USER_AUTHORIZATION_EXPIRED' */
+  executionStatus: string | null;
+  /** End of the Open Finance consent (Meu Pluggy: one year), when Pluggy sends it. */
+  consentExpiresAt: string | null;
+  connectorName: string | null;
+}
+
 export interface PluggyClient {
+  /** GET /items/:id: the status of a connection (an expired authorization reads as empty lists, not as an error). */
+  getItem(itemId: string): Promise<PluggyItem>;
   /** Trades the keys for an API key: 'refused' when Pluggy turns them down (e.g. CLIENT_SECRET_EXPIRED). */
   checkCredentials(): Promise<'ok' | 'refused'>;
   listAccounts(itemId: string): Promise<PluggyAccount[]>;
@@ -209,6 +222,20 @@ export function createPluggyClient(options: PluggyOptions): PluggyClient {
         if (error instanceof PluggyError && error.kind === 'auth') return 'refused';
         throw error;
       }
+    },
+
+    async getItem(itemId) {
+      const body = (await get(`/items/${encodeURIComponent(itemId)}`)) as Json | null;
+      const id = str(body?.id);
+      const status = str(body?.status);
+      if (!id || !status) throw new PluggyError('invalid_response');
+      return {
+        id,
+        status,
+        executionStatus: str(body?.executionStatus),
+        consentExpiresAt: str(body?.consentExpiresAt),
+        connectorName: str((body?.connector as Json | undefined)?.name),
+      };
     },
 
     async listAccounts(itemId) {

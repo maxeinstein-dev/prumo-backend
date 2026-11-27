@@ -5,12 +5,14 @@ import { prisma } from '../../shared/db/prisma.js';
 import { AppError } from '../../shared/errors/app-error.js';
 import { authMiddleware } from '../../shared/middleware/auth.middleware.js';
 import { ensurePersonalHousehold, requireEditor, requireHouseholdMember } from '../../shared/middleware/authorization.middleware.js';
+import { checkOpenFinance, type CheckDb } from './open-finance.check.js';
 import { addItem, listLinks, removeItem, replaceAccountLinks, replaceItem, type LinksDb } from './open-finance.links.js';
 import { previewOpenFinance, type PreviewDb } from './open-finance.preview.js';
 import { createPluggyClient, PluggyError } from './pluggy.client.js';
 
 const previewQuerySchema = z.object({ householdId: z.string().uuid().optional() });
 const householdQuerySchema = previewQuerySchema;
+const checkQuerySchema = previewQuerySchema.extend({ ignoreSavings: z.string().max(500).optional() });
 const replaceLinksSchema = z.object({
   links: z
     .array(z.object({ pluggyItemId: z.string().uuid(), pluggyAccountId: z.string().uuid(), accountId: z.string().uuid() }))
@@ -180,5 +182,28 @@ export async function openFinanceRoutes(app: FastifyInstance) {
     await requireEditor(request, householdId);
     await removeItem({ householdId, db, itemId });
     return reply.send({ success: true, data: { itemId } });
+  });
+
+  /**
+   * GET /open-finance/check?ignoreSavings=A,B
+   * The last 30 days of every linked bank account against Prumo: what Prumo has, what is missing, own transfers,
+   * internal and outside lines. Reads only (P25 L2a). ignoreSavings: savings whose money stays outside Prumo.
+   */
+  app.get('/check', {
+    schema: {
+      description: 'Check the last 30 days of the linked bank accounts against Prumo, without writing anything; ?ignoreSavings= lists savings (comma separated) whose money stays outside Prumo',
+      tags: ['Open Finance'],
+      security: [{ bearerAuth: [] }],
+      response: objectResponse,
+    },
+  }, async (request, reply) => {
+    const query = checkQuerySchema.parse(request.query);
+    const householdId = query.householdId ?? await ensurePersonalHousehold(request);
+    await requireHouseholdMember(request, householdId);
+    const ignoredSavings = (query.ignoreSavings ?? '').split(',').map((name) => name.trim()).filter(Boolean);
+    const data = await withPluggyErrors(() =>
+      checkOpenFinance({ householdId, db: prisma as unknown as CheckDb, client: clientFromEnv(), ignoredSavings }),
+    );
+    return reply.send({ success: true, data });
   });
 }
