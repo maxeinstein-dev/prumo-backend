@@ -54,17 +54,17 @@ const TX: Record<string, PluggyTransaction[]> = {
     t(PW, '2026-11-20', 0.3, 'Rendimentos'),
     t(PW, '2026-11-21', 0.25, 'Rendimentos'),
     t(PW, '2026-10-30', 0.1, 'Rendimentos'),
-    t(PW, '2026-11-18', 23, 'Dinheiro retirado Cofrinho Azul'),
-    t(PW, '2026-11-18', -23, 'Dinheiro retirado'),
-    t(PW, '2026-11-18', -22.5, 'Pix enviado Loja Exemplo'), // in Prumo
-    t(PW, '2026-11-12', 320, 'Dinheiro retirado Cofrinho Pai'),
-    t(PW, '2026-11-12', -320, 'Dinheiro retirado'),
-    t(PW, '2026-11-12', -320, 'Pix enviado Fulano Exemplo'), // outside (ignored savings)
-    t(PW, '2026-11-16', -750, 'Pix enviado Titular Exemplo'), // own transfer to the bank account
-    t(PW, '2026-11-05', -124.25, 'Pagamento com Pix Internet Exemplo'), // missing in Prumo
+    t(PW, '2026-11-18', 27, 'Dinheiro retirado Cofrinho Azul'),
+    t(PW, '2026-11-18', -27, 'Dinheiro retirado'),
+    t(PW, '2026-11-18', -26.5, 'Pix enviado Loja Exemplo'), // in Prumo
+    t(PW, '2026-11-12', 280, 'Dinheiro retirado Cofrinho Pai'),
+    t(PW, '2026-11-12', -280, 'Dinheiro retirado'),
+    t(PW, '2026-11-12', -280, 'Pix enviado Fulano Exemplo'), // outside (ignored savings)
+    t(PW, '2026-11-16', -680, 'Pix enviado Titular Exemplo'), // own transfer to the bank account
+    t(PW, '2026-11-05', -118.4, 'Pagamento com Pix Internet Exemplo'), // missing in Prumo
   ],
-  [PB]: [t(PB, '2026-11-16', 750, 'Transferência recebida Titular Exemplo')],
-  [PCARD]: [t(PCARD, '2026-11-16', 51.1, 'Compra Exemplo 1/6')],
+  [PB]: [t(PB, '2026-11-16', 680, 'Transferência recebida Titular Exemplo')],
+  [PCARD]: [t(PCARD, '2026-11-16', 47.3, 'Compra Exemplo 1/6')],
   [PINV]: [t(PINV, '2026-11-19', 4.28, 'RENDIMENTOS DE CLIENTES FUNDO11')],
 };
 
@@ -92,7 +92,7 @@ function fakeDb() {
     { pluggyItemId: ITEM_B, pluggyAccountId: PINV, accountId: ACC_INV },
   ]);
   const findTx = vi.fn(async () => [
-    { id: 'p-pix', type: 'EXPENSE', accountId: ACC_W, fromAccountId: null, toAccountId: null, amount: '22.50', date: new Date('2026-11-18T00:00:00Z'), description: 'Loja', paid: true },
+    { id: 'p-pix', type: 'EXPENSE', accountId: ACC_W, fromAccountId: null, toAccountId: null, amount: '26.50', date: new Date('2026-11-18T00:00:00Z'), description: 'Loja', paid: true },
     { id: 'p-extra', type: 'EXPENSE', accountId: ACC_W, fromAccountId: null, toAccountId: null, amount: '99.00', date: new Date('2026-11-10T00:00:00Z'), description: 'Só no Prumo', paid: false },
   ]);
   const findAccounts = vi.fn(async () => [
@@ -135,18 +135,18 @@ describe('checkOpenFinance', () => {
     const wallet = report.accounts.find((a) => a.pluggyAccountId === PW)!;
     expect(wallet.prumoAccountId).toBe(ACC_W);
     expect(wallet.counts).toEqual({ yield: 3, savings: 4, outside: 1, passthrough: 0, matched: 1, missing: 1 });
-    // Prumo's savings has 100 of 1.000 before the moves (10 %: 1 of 10 cents in October); after 320 left the ignored one
-    // (12th) and 23 left ours (18th), 77 of 657 (11,7 %): 30 -> 4 and 25 -> 3 cents in November.
+    // Prumo's savings has 100 of 1.000 before the moves (10 %: 1 of 10 cents in October); after 280 left the ignored one
+    // (12th) and 27 left ours (18th), 73 of 693 (10,5 %): 30 -> 3 and 25 -> 3 cents in November.
     expect(wallet.yieldsByMonth).toEqual([
       { month: '2026-10', cents: 10, prumoCents: 1 },
-      { month: '2026-11', cents: 55, prumoCents: 7 },
+      { month: '2026-11', cents: 55, prumoCents: 6 },
     ]);
-    expect(wallet.missing).toEqual([{ id: expect.any(String), date: '2026-11-05', cents: -12425, description: 'Pagamento com Pix Internet Exemplo', savingsName: null }]);
-    expect(wallet.outside).toEqual([expect.objectContaining({ cents: -32000, savingsName: 'Cofrinho Pai' })]);
+    expect(wallet.missing).toEqual([{ id: expect.any(String), date: '2026-11-05', cents: -11840, description: 'Pagamento com Pix Internet Exemplo', savingsName: null }]);
+    expect(wallet.outside).toEqual([expect.objectContaining({ cents: -28000, savingsName: 'Cofrinho Pai' })]);
     expect(wallet.onlyInPrumo).toEqual([{ id: 'p-extra', type: 'EXPENSE', date: '2026-11-10', cents: 9900, description: 'Só no Prumo', paid: false }]);
 
     expect(report.transfers.missing).toEqual([
-      { date: '2026-11-16', cents: 75000, fromPrumoAccountId: ACC_W, toPrumoAccountId: ACC_B, outDescription: 'Pix enviado Titular Exemplo', inDescription: 'Transferência recebida Titular Exemplo' },
+      { date: '2026-11-16', cents: 68000, fromPrumoAccountId: ACC_W, toPrumoAccountId: ACC_B, outDescription: 'Pix enviado Titular Exemplo', inDescription: 'Transferência recebida Titular Exemplo' },
     ]);
     expect(report.savingsNames).toEqual(['Cofrinho Azul', 'Cofrinho Pai']);
 

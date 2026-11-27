@@ -18,20 +18,20 @@ describe('balanceChecks', () => {
   it('compares the bank balance of the last import with Prumo\'s balance: exact accounts warn from 1 cent, estimated ones above R$ 1', async () => {
     const db = fakeDb(
       [
-        { accountId: 'acc-w', bankBalance: '401.40', bankBalanceAt: AT, bankBalanceEstimated: true },
+        { accountId: 'acc-w', bankBalance: '512.30', bankBalanceAt: AT, bankBalanceEstimated: true },
         { accountId: 'acc-b', bankBalance: '0.00', bankBalanceAt: AT, bankBalanceEstimated: false },
         { accountId: 'acc-c', bankBalance: '12.00', bankBalanceAt: AT, bankBalanceEstimated: false },
         { accountId: 'acc-never', bankBalance: null, bankBalanceAt: null, bankBalanceEstimated: false },
       ],
       [
-        { id: 'acc-w', name: 'Carteira Exemplo', totalBalance: '400.90' },
+        { id: 'acc-w', name: 'Carteira Exemplo', totalBalance: '511.80' },
         { id: 'acc-b', name: 'Banco Exemplo', totalBalance: '-0.01' },
         { id: 'acc-c', name: 'Outro Banco', totalBalance: '12.00' },
       ],
     );
 
     expect(await balanceChecks({ db, householdId: HH })).toEqual([
-      { prumoAccountId: 'acc-w', accountName: 'Carteira Exemplo', bankCents: 40140, prumoCents: 40090, diffCents: 50, estimated: true, toleranceCents: 100, alert: false, at: AT.toISOString(), pendingCents: 0 },
+      { prumoAccountId: 'acc-w', accountName: 'Carteira Exemplo', bankCents: 51230, prumoCents: 51180, diffCents: 50, estimated: true, toleranceCents: 100, alert: false, at: AT.toISOString(), pendingCents: 0 },
       { prumoAccountId: 'acc-b', accountName: 'Banco Exemplo', bankCents: 0, prumoCents: -1, diffCents: 1, estimated: false, toleranceCents: 0, alert: true, at: AT.toISOString(), pendingCents: 0 },
       { prumoAccountId: 'acc-c', accountName: 'Outro Banco', bankCents: 1200, prumoCents: 1200, diffCents: 0, estimated: false, toleranceCents: 0, alert: false, at: AT.toISOString(), pendingCents: 0 },
     ]);
@@ -39,8 +39,8 @@ describe('balanceChecks', () => {
 
   it('an estimated account warns above R$ 1 of difference', async () => {
     const db = fakeDb(
-      [{ accountId: 'acc-w', bankBalance: '401.40', bankBalanceAt: AT, bankBalanceEstimated: true }],
-      [{ id: 'acc-w', name: 'Carteira Exemplo', totalBalance: '391.40' }],
+      [{ accountId: 'acc-w', bankBalance: '512.30', bankBalanceAt: AT, bankBalanceEstimated: true }],
+      [{ id: 'acc-w', name: 'Carteira Exemplo', totalBalance: '502.30' }],
     );
     expect((await balanceChecks({ db, householdId: HH }))[0]).toMatchObject({ diffCents: 1000, alert: true });
   });
@@ -49,17 +49,17 @@ describe('balanceChecks', () => {
 describe('balanceChecks: drafts waiting in the box (27/11/2026)', () => {
   it('each account says how much its pending Open Finance drafts add up to (income +, expense -)', async () => {
     const db = fakeDb(
-      [{ accountId: 'acc-w', bankBalance: '1130.20', bankBalanceAt: AT, bankBalanceEstimated: true }],
-      [{ id: 'acc-w', name: 'Carteira Exemplo', totalBalance: '374.20' }],
+      [{ accountId: 'acc-w', bankBalance: '1052.70', bankBalanceAt: AT, bankBalanceEstimated: true }],
+      [{ id: 'acc-w', name: 'Carteira Exemplo', totalBalance: '412.70' }],
       [
-        { parsed: { type: 'INCOME', amountCents: 75600, accountId: 'acc-w' } },
-        { parsed: { type: 'EXPENSE', amountCents: 600, accountId: 'acc-w' } },
+        { parsed: { type: 'INCOME', amountCents: 64000, accountId: 'acc-w' } },
+        { parsed: { type: 'EXPENSE', amountCents: 500, accountId: 'acc-w' } },
         { parsed: { type: 'INCOME', amountCents: 999, accountId: 'acc-other' } },
         { parsed: null },
       ],
     );
     const [check] = await balanceChecks({ db, householdId: HH });
-    expect(check).toMatchObject({ diffCents: 75600, pendingCents: 75000, alert: true });
+    expect(check).toMatchObject({ diffCents: 64000, pendingCents: 63500, alert: true });
     expect(db.capturedNotification.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { householdId: HH, package: 'open-finance', status: 'PENDING' } }),
     );

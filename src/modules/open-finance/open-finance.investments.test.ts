@@ -30,9 +30,9 @@ describe('compareInvestments', () => {
         inv({ code: 'CCCC11', type: 'ETF', subtype: null, quantity: 2, balance: 200 }),
         inv({ code: 'GONE11', quantity: 1, balance: 10, status: 'TOTAL_WITHDRAWAL' }),
       ],
-      bankCashCents: 966,
+      bankCashCents: 1210,
       prumo: {
-        summary: { cashBalance: 9.66, totalValue: 1500.66 },
+        summary: { cashBalance: 12.1, totalValue: 1503.1 },
         positions: [
           prumoPosition({ ticker: 'AAAA11', quantity: 10, currentValue: 990 }),
           prumoPosition({ ticker: 'BBBB3', quantity: 4, currentValue: 200 }),
@@ -57,9 +57,9 @@ describe('compareInvestments', () => {
         inv({ type: 'FIXED_INCOME', subtype: 'LCA', name: 'LCA Exemplo', balance: 5000.5 }),
         inv({ type: 'MUTUAL_FUND', subtype: null, name: 'Fundo DI', balance: 499.5 }),
       ],
-      bankCashCents: 966,
+      bankCashCents: 1210,
       prumo: {
-        summary: { cashBalance: 9.66, totalValue: 6505.66 },
+        summary: { cashBalance: 12.1, totalValue: 6508.1 },
         positions: [
           prumoPosition({ ticker: 'AAAA11', quantity: 10, currentValue: 1000 }),
           prumoPosition({ kind: 'FIXED_INCOME', name: 'LCA', currentValue: 5496 }),
@@ -68,8 +68,8 @@ describe('compareInvestments', () => {
     });
 
     expect(result.others).toEqual({ bankCents: 550000, prumoCents: 549600 });
-    expect(result.cash).toEqual({ bankCents: 966, prumoCents: 966 });
-    expect(result.total).toEqual({ bankCents: 650966, prumoCents: 650566, diffCents: 400 });
+    expect(result.cash).toEqual({ bankCents: 1210, prumoCents: 1210 });
+    expect(result.total).toEqual({ bankCents: 651210, prumoCents: 650810, diffCents: 400 });
   });
 });
 
@@ -87,7 +87,7 @@ describe('checkInvestments', () => {
     };
     const client = {
       getItem: async (id: string) => ({ id, status: 'UPDATED', executionStatus: 'SUCCESS', consentExpiresAt: null, connectorName: null }),
-      listAccounts: async () => [{ id: 'pa-x', itemId: 'item-x', type: 'BANK', subtype: null, name: 'Conta', marketingName: null, number: '0', balance: 9.66, currencyCode: 'BRL' }],
+      listAccounts: async () => [{ id: 'pa-x', itemId: 'item-x', type: 'BANK', subtype: null, name: 'Conta', marketingName: null, number: '0', balance: 12.1, currencyCode: 'BRL' }],
       listInvestments: async () => [inv({ code: 'AAAA11', quantity: 10, balance: 1000 })],
       listBills: async () => [],
     listCards: async () => [],
@@ -101,7 +101,7 @@ describe('checkInvestments', () => {
       client,
       loadPortfolio: async (accountId: string) => {
         loaded.push(accountId);
-        return { summary: { cashBalance: 9.66, totalValue: 1009.66 }, positions: [prumoPosition({ ticker: 'AAAA11', quantity: 10, currentValue: 1000 })] };
+        return { summary: { cashBalance: 12.1, totalValue: 1012.1 }, positions: [prumoPosition({ ticker: 'AAAA11', quantity: 10, currentValue: 1000 })] };
       },
     });
 
@@ -111,7 +111,7 @@ describe('checkInvestments', () => {
         prumoAccountId: 'acc-inv',
         accountName: 'Corretora Exemplo',
         blocked: null,
-        total: { bankCents: 100966, prumoCents: 100966, diffCents: 0 },
+        total: { bankCents: 101210, prumoCents: 101210, diffCents: 0 },
         stocks: [expect.objectContaining({ ticker: 'AAAA11', status: 'same' })],
       }),
     ]);
