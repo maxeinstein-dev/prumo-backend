@@ -86,6 +86,7 @@ function client(byItem: Record<string, PluggyAccount[] | Error>): PluggyClient {
       if (answer instanceof Error) throw answer;
       return answer ?? [];
     }),
+    listInvestments: vi.fn(async () => []),
     listTransactions: vi.fn(async () => []),
   };
 }

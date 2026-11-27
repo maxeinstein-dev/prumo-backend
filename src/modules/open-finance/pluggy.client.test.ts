@@ -253,6 +253,30 @@ describe('createPluggyClient', () => {
     expect(new URL(calls[1].url).pathname).toBe(`/items/${ITEM}`);
   });
 
+  it('listInvestments reads every page of GET /investments?itemId= and keeps what the comparison needs', async () => {
+    const inv = (id: string, extra: Record<string, unknown> = {}) => ({
+      id, itemId: ITEM, name: 'Fundo Exemplo', code: 'EXMP11', isin: 'BREXMPCTF000', type: 'EQUITY', subtype: 'REAL_ESTATE_FUND',
+      balance: 1012.5, amount: 1020, quantity: 10, value: 101.25, date: '2026-11-26T00:00:00.000Z', dueDate: null, status: 'ACTIVE', ...extra,
+    });
+    const { fn, calls } = fakeFetch((call) => {
+      if (authOk(call)) return authOk(call)!;
+      const page = new URL(call.url).searchParams.get('page');
+      return page === '1'
+        ? json(200, { page: 1, total: 2, totalPages: 2, results: [inv('i-1')] })
+        : json(200, { page: 2, total: 2, totalPages: 2, results: [inv('i-2', { code: null, type: 'FIXED_INCOME', subtype: 'LCA', quantity: null, value: null, name: 'LCA Exemplo', dueDate: '2027-06-01T00:00:00.000Z' })] });
+    });
+    const client = createPluggyClient({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, fetch: fn });
+
+    const list = await client.listInvestments(ITEM);
+
+    expect(new URL(calls[1].url).pathname).toBe('/investments');
+    expect(new URL(calls[1].url).searchParams.get('itemId')).toBe(ITEM);
+    expect(list).toEqual([
+      { id: 'i-1', name: 'Fundo Exemplo', code: 'EXMP11', type: 'EQUITY', subtype: 'REAL_ESTATE_FUND', balance: 1012.5, quantity: 10, value: 101.25, date: '2026-11-26', dueDate: null, status: 'ACTIVE' },
+      { id: 'i-2', name: 'LCA Exemplo', code: null, type: 'FIXED_INCOME', subtype: 'LCA', balance: 1012.5, quantity: null, value: null, date: '2026-11-26', dueDate: '2027-06-01', status: 'ACTIVE' },
+    ]);
+  });
+
   it('a network failure fails as network', async () => {
     const fn = vi.fn(async () => {
       throw new TypeError('fetch failed');

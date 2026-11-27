@@ -75,6 +75,7 @@ function fakeClient(): PluggyClient {
     listAccounts: vi.fn(async (id: string) =>
       id === ITEM_W ? [acc(PW, ITEM_W, 'BANK')] : id === ITEM_B ? [acc(PB, ITEM_B, 'BANK'), acc(PCARD, ITEM_B, 'CREDIT'), acc(PINV, ITEM_B, 'BANK')] : [acc(PX, ITEM_X, 'BANK')],
     ),
+    listInvestments: vi.fn(async () => []),
     listTransactions: vi.fn(async (accountId: string) => TX[accountId] ?? []),
   };
 }
