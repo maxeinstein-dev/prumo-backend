@@ -230,6 +230,29 @@ describe('createPluggyClient', () => {
     await expect(createPluggyClient({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, fetch: down.fn }).checkCredentials()).rejects.toMatchObject({ kind: 'http', status: 503 });
   });
 
+  it('getItem reads the status of a connection (GET /items/:id) with the consent end, if any', async () => {
+    const { fn, calls } = fakeFetch((call) => {
+      if (authOk(call)) return authOk(call)!;
+      return json(200, {
+        id: ITEM,
+        status: 'LOGIN_ERROR',
+        executionStatus: 'USER_AUTHORIZATION_EXPIRED',
+        consentExpiresAt: '2027-11-26T00:00:00.000Z',
+        connector: { id: 200, name: 'Banco Inventado' },
+      });
+    });
+    const client = createPluggyClient({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, fetch: fn });
+
+    await expect(client.getItem(ITEM)).resolves.toEqual({
+      id: ITEM,
+      status: 'LOGIN_ERROR',
+      executionStatus: 'USER_AUTHORIZATION_EXPIRED',
+      consentExpiresAt: '2027-11-26T00:00:00.000Z',
+      connectorName: 'Banco Inventado',
+    });
+    expect(new URL(calls[1].url).pathname).toBe(`/items/${ITEM}`);
+  });
+
   it('a network failure fails as network', async () => {
     const fn = vi.fn(async () => {
       throw new TypeError('fetch failed');

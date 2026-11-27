@@ -80,6 +80,7 @@ const pAcc = (id: string, itemId: string, type: 'BANK' | 'CREDIT'): PluggyAccoun
 function client(byItem: Record<string, PluggyAccount[] | Error>): PluggyClient {
   return {
     checkCredentials: vi.fn(async () => 'ok' as const),
+    getItem: vi.fn(async (id: string) => ({ id, status: 'UPDATED', executionStatus: 'SUCCESS', consentExpiresAt: null, connectorName: null })),
     listAccounts: vi.fn(async (itemId: string) => {
       const answer = byItem[itemId];
       if (answer instanceof Error) throw answer;

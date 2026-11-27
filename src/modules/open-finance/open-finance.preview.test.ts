@@ -44,6 +44,7 @@ function readOnlyDb(links: Array<{ pluggyItemId: string; pluggyAccountId: string
 function fakeClient(overrides: Partial<PluggyClient> = {}): PluggyClient {
   return {
     checkCredentials: vi.fn(async () => 'ok' as const),
+    getItem: vi.fn(async (id: string) => ({ id, status: 'UPDATED', executionStatus: 'SUCCESS', consentExpiresAt: null, connectorName: null })),
     listAccounts: vi.fn(async (itemId: string) =>
       itemId === ITEM_A ? [acc(PACC_1, ITEM_A, 'Conta A'), acc(PACC_2, ITEM_A, 'Cofrinho A')] : [acc(PACC_3, ITEM_B, 'Conta B')],
     ),
