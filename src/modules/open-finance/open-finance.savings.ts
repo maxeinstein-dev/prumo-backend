@@ -83,3 +83,36 @@ export function splitYields(
   }
   return [...months].map(([month, v]) => ({ month, ...v }));
 }
+
+/**
+ * Today's estimate of a savings' balance (P25 L3): the registered balance, its named moves since then, and its share
+ * of each day's yield after the registered day (split by the balances of the day before, rounded per day). null when
+ * this savings, or any other one sharing the yield, has no registered balance.
+ */
+export function estimatedSavingsBalance(
+  config: SavingsConfig,
+  today: string,
+  lines: readonly BankLine[],
+  savings: readonly SavingsConfig[],
+): number | null {
+  const base = savingsBalanceOn(config, today, lines);
+  if (base === null || !config.asOf) return null;
+  const asOf = config.asOf;
+
+  const byDay = new Map<string, number>();
+  for (const line of lines) {
+    if (line.kind !== 'yield' || line.date <= asOf || line.date > today) continue;
+    byDay.set(line.date, (byDay.get(line.date) ?? 0) + line.cents);
+  }
+
+  let earned = 0;
+  for (const [day, cents] of byDay) {
+    const before = previousDay(day);
+    const balances = savings.map((s) => savingsBalanceOn(s, before, lines));
+    if (balances.some((b) => b === null)) return null;
+    const total = balances.reduce<number>((sum, b) => sum + Math.max(b!, 0), 0);
+    const own = Math.max(savingsBalanceOn(config, before, lines)!, 0);
+    if (total > 0) earned += Math.round((cents * own) / total);
+  }
+  return base + earned;
+}

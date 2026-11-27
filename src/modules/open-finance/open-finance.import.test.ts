@@ -217,6 +217,27 @@ describe('importOpenFinance', () => {
     expect(state.captures.filter((c) => c.package === 'open-finance').map((c) => c.text)).toEqual(['Pix enviado Loja']);
   });
 
+  it('records the bank balance of each account: the account plus the estimate of its Prumo savings (estimated), or the account alone', async () => {
+    const tx = {
+      [PW]: [t(PW, '2026-12-01', -10, 'Dinheiro reservado Cofrinho Azul'), t(PW, '2026-12-01', 10, 'Dinheiro reservado')],
+      [PB]: [],
+    };
+    const savings = [{ name: 'Cofrinho Azul', aliases: [], inPrumo: true, approxBalance: '100.00', balanceAsOf: new Date('2026-11-30T00:00:00Z') }];
+    const { db, state } = fakeDb({ importFrom: '2026-11-27', savings });
+    const client = fakeClient(tx);
+    client.listAccounts = vi.fn(async (id: string) =>
+      id === ITEM_W ? [{ ...acc(PW, ITEM_W), balance: 0.5 }] : [{ ...acc(PB, ITEM_B), balance: 12.34 }],
+    );
+
+    await importOpenFinance({ householdId: HH, db, client, now: NOW });
+
+    const w = state.links.find((l) => l.id === 'link-w')!;
+    const b = state.links.find((l) => l.id === 'link-b')!;
+    // 0,50 in the account + 100,00 registered + 10,00 put into the savings on 01/12.
+    expect([w.bankBalance, w.bankBalanceEstimated, w.bankBalanceAt]).toEqual([110.5, true, NOW]);
+    expect([b.bankBalance, b.bankBalanceEstimated]).toEqual([12.34, false]);
+  });
+
   it('an item with expired authorization is not read: its links keep the error, nothing is drafted for it', async () => {
     const tx = { [PW]: [t(PW, '2026-12-01', -6, 'Pix enviado Feira')] };
     const { db, state } = fakeDb({ importFrom: '2026-11-27' });

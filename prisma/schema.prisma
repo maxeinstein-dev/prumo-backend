@@ -1319,6 +1319,11 @@ model OpenFinanceLink {
   lastError       String?   @map("last_error") @db.VarChar(500)
   // P25 L2b2: day the import started for this account; drafts only for lines from this day on (set on the first run).
   importFrom      DateTime? @map("import_from") @db.Date
+  // P25 L3: the bank's balance at the last import (for a wallet with savings, the account plus the estimate of its
+  // Prumo savings: then bankBalanceEstimated = true). Compared with Prumo's balance on the Início.
+  bankBalance          Decimal?  @map("bank_balance") @db.Decimal(15, 2)
+  bankBalanceAt        DateTime? @map("bank_balance_at") @db.Timestamptz(3)
+  bankBalanceEstimated Boolean   @default(false) @map("bank_balance_estimated")
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
