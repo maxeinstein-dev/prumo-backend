@@ -44,7 +44,7 @@ export interface AnalyzeDb {
 
 export const ymd = (date: Date): string => date.toISOString().slice(0, 10);
 
-function blockedText(status: string, executionStatus: string | null): string | null {
+export function blockedText(status: string, executionStatus: string | null): string | null {
   if (executionStatus === 'USER_AUTHORIZATION_EXPIRED' || status === 'LOGIN_ERROR') {
     return 'A autorização deste banco venceu: reconecte no Meu Pluggy.';
   }

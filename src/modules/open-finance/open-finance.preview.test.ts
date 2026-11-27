@@ -48,6 +48,7 @@ function fakeClient(overrides: Partial<PluggyClient> = {}): PluggyClient {
     listAccounts: vi.fn(async (itemId: string) =>
       itemId === ITEM_A ? [acc(PACC_1, ITEM_A, 'Conta A'), acc(PACC_2, ITEM_A, 'Cofrinho A')] : [acc(PACC_3, ITEM_B, 'Conta B')],
     ),
+    listInvestments: vi.fn(async () => []),
     listTransactions: vi.fn(async (accountId: string) => [tx(`t-${accountId.slice(-1)}`, accountId)]),
     ...overrides,
   };

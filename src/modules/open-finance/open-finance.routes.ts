@@ -7,6 +7,9 @@ import { authMiddleware } from '../../shared/middleware/auth.middleware.js';
 import { ensurePersonalHousehold, requireEditor, requireHouseholdMember } from '../../shared/middleware/authorization.middleware.js';
 import { balanceChecks, type BalancesDb } from './open-finance.balances.js';
 import { checkOpenFinance, type CheckDb } from './open-finance.check.js';
+import { checkInvestments, type InvestmentsDb, type PrumoPortfolio } from './open-finance.investments.js';
+import { listPositions, loadAccount } from '../investments/investments.service.js';
+import { ForbiddenError } from '../../shared/errors/app-error.js';
 import { importOpenFinance, type ImportDb } from './open-finance.import.js';
 import { listSavings, replaceSavings, type SavingsDb } from './open-finance.savings.service.js';
 import { addItem, listLinks, removeItem, replaceAccountLinks, replaceItem, type LinksDb } from './open-finance.links.js';
@@ -298,5 +301,35 @@ export async function openFinanceRoutes(app: FastifyInstance) {
     await requireHouseholdMember(request, householdId);
     const balances = await balanceChecks({ db: prisma as unknown as BalancesDb, householdId });
     return reply.send({ success: true, data: { balances } });
+  });
+
+  /**
+   * GET /open-finance/investments : the broker portfolio as Pluggy shows it against what P21 computes for each linked
+   * investment account (P25 L5, only a warning: nothing is overwritten). Reads only.
+   */
+  app.get('/investments', {
+    schema: {
+      description: 'Compare the broker portfolio from Open Finance with the P21 positions of each linked investment account: stocks by ticker (quantity and value), the rest as a total, cash and the account total. Reads only',
+      tags: ['Open Finance'],
+      security: [{ bearerAuth: [] }],
+      response: objectResponse,
+    },
+  }, async (request, reply) => {
+    const query = householdQuerySchema.parse(request.query);
+    const householdId = query.householdId ?? await ensurePersonalHousehold(request);
+    await requireHouseholdMember(request, householdId);
+    const loadPortfolio = async (accountId: string): Promise<PrumoPortfolio> => {
+      const account = await loadAccount(accountId);
+      if (account.householdId !== householdId) throw new ForbiddenError();
+      const { summary, positions } = await listPositions(account, {});
+      return {
+        summary: { cashBalance: summary.cashBalance, totalValue: summary.totalValue },
+        positions: positions.map((p) => ({ kind: p.kind, ticker: p.ticker, name: p.name, quantity: p.quantity ?? 0, currentValue: p.currentValue, closedAt: p.closedAt })),
+      };
+    };
+    const accounts = await withPluggyErrors(() =>
+      checkInvestments({ householdId, db: prisma as unknown as InvestmentsDb, client: clientFromEnv(), loadPortfolio }),
+    );
+    return reply.send({ success: true, data: { accounts } });
   });
 }
