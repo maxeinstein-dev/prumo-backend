@@ -1,5 +1,6 @@
 import { CARD_LAST4_PATTERN, type CaptureKind } from './captures.schema.js';
 import type { CaptureWarning } from './parsers/types.js';
+import { OPEN_FINANCE_PACKAGE } from './open-finance-package.js';
 import type { CategoryHints, CategorySource } from './capture-category.js';
 
 /**
@@ -80,6 +81,13 @@ export function suggestedPlace(parsed: unknown): string | null {
  * (package, kind) rule; else none. Category: the hint of the place the parser read (`merchant`), for the type it
  * read; none without both. Fields of the wrong shape are dropped to null, never guessed.
  */
+/** An Open Finance draft knows its account (the link of its bank account); no other reading is trusted with one. */
+function ownAccount(capture: SuggestionInput): string | null {
+  if (capture.package !== OPEN_FINANCE_PACKAGE) return null;
+  const accountId = parsedField(capture.parsed, 'accountId');
+  return typeof accountId === 'string' && accountId.length > 0 ? accountId : null;
+}
+
 export function buildSuggestion(
   capture: SuggestionInput,
   rules: readonly SuggestionRule[],
@@ -99,7 +107,7 @@ export function buildSuggestion(
   const hint = hints && knownType && place ? hints.lookup(knownType, place) : null;
   return {
     type: knownType,
-    accountId: cardRule?.accountId ?? rule?.accountId ?? null,
+    accountId: ownAccount(capture) ?? cardRule?.accountId ?? rule?.accountId ?? null,
     categoryName: hint?.categoryName ?? null,
     categorySource: hint?.source ?? null,
     amount: suggestedAmount(capture.parsed),

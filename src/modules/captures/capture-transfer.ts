@@ -1,4 +1,5 @@
 import { pairClosest, readingOf, type PairCandidate } from './capture-pairing.js';
+import { OPEN_FINANCE_PACKAGE } from './open-finance-package.js';
 
 /**
  * A Pix between two accounts of the user arrives as an outflow (an app notification or the Google Pay e-mail) and as an
@@ -31,9 +32,22 @@ export function isTransferIn(c: Pick<PairCandidate, 'status' | 'parsed'>): boole
   return c.status === 'PENDING' && !!r && r.kind === 'PIX_IN' && r.warning === 'POSSIBLE_OWN_TRANSFER';
 }
 
+function pairKey(c: TransferCandidate): string | null {
+  const key = (c.parsed as Record<string, unknown> | null | undefined)?.pairKey;
+  return typeof key === 'string' && key.length > 0 ? key : null;
+}
+
+/** Notifications pair across two apps; Open Finance drafts (one source for both banks) only through their pairKey. */
+function canPair(o: TransferCandidate, i: TransferCandidate): boolean {
+  if (o.package === OPEN_FINANCE_PACKAGE || i.package === OPEN_FINANCE_PACKAGE) {
+    return o.package === i.package && pairKey(o) !== null && pairKey(o) === pairKey(i);
+  }
+  return o.package !== i.package;
+}
+
 export function ownTransferPairs(candidates: readonly TransferCandidate[]): TransferPair[] {
   const outs = candidates.filter(isTransferOut);
   const ins = candidates.filter(isTransferIn);
-  return pairClosest(outs, ins, TRANSFER_WINDOW_MS, (o, i) => o.package !== i.package)
+  return pairClosest(outs, ins, TRANSFER_WINDOW_MS, canPair)
     .map(({ left, right }) => ({ outId: left.id, inId: right.id }));
 }

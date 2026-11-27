@@ -20,6 +20,9 @@ const PARSERS: Record<string, AppParser> = {
   'br.com.xp.carteira': parseXp,
 };
 
+/** The packages that have a reader (a reparse only reads these again; other drafts carry their own reading). */
+export const PARSED_PACKAGES: readonly string[] = Object.keys(PARSERS);
+
 /** Pure. null = not understood (the capture stays PENDING for the user to fill in by hand). */
 export function parseCapture(input: ParserInput): ParsedCapture | null {
   const parser = PARSERS[input.package];
