@@ -15,6 +15,7 @@ export interface BalancesDb {
     >;
   };
   account: { findMany(args: unknown): Promise<Array<{ id: string; name: string; totalBalance: unknown }>> };
+  capturedNotification: { findMany(args: unknown): Promise<Array<{ parsed: unknown }>> };
 }
 
 export interface BalanceCheck {
@@ -29,6 +30,8 @@ export interface BalanceCheck {
   alert: boolean;
   /** When the bank balance was read (ISO). */
   at: string | null;
+  /** Open Finance drafts of this account still waiting in the captures box: income +, expense - (shown beside). */
+  pendingCents: number;
 }
 
 const toCents = (value: unknown): number => Math.round(Number(value) * 100);
@@ -48,6 +51,20 @@ export async function balanceChecks(input: { db: BalancesDb; householdId: string
     select: { id: true, name: true, totalBalance: true },
   });
 
+  // Drafts still waiting in the box: the bank already has them, Prumo not yet (decision of 27/11/2026: show both).
+  const pending = new Map<string, number>();
+  const drafts = await input.db.capturedNotification.findMany({
+    where: { householdId: input.householdId, package: 'open-finance', status: 'PENDING' },
+    select: { parsed: true },
+  });
+  for (const draft of drafts) {
+    const parsed = (draft.parsed ?? {}) as Record<string, unknown>;
+    const accountId = typeof parsed.accountId === 'string' ? parsed.accountId : null;
+    const cents = typeof parsed.amountCents === 'number' ? parsed.amountCents : null;
+    if (!accountId || cents === null || (parsed.type !== 'INCOME' && parsed.type !== 'EXPENSE')) continue;
+    pending.set(accountId, (pending.get(accountId) ?? 0) + (parsed.type === 'INCOME' ? cents : -cents));
+  }
+
   return links.flatMap((link) => {
     const account = accounts.find((a) => a.id === link.accountId);
     if (!account) return [];
@@ -66,6 +83,7 @@ export async function balanceChecks(input: { db: BalancesDb; householdId: string
         toleranceCents,
         alert: Math.abs(diffCents) > toleranceCents,
         at: link.bankBalanceAt ? link.bankBalanceAt.toISOString() : null,
+        pendingCents: pending.get(account.id) ?? 0,
       },
     ];
   });
