@@ -165,38 +165,42 @@ describe('importOpenFinance', () => {
     expect(raw.capturedNotification.createMany).not.toHaveBeenCalled();
   });
 
-  it('one yield draft per closed month after the start, with Prumo\'s share of the savings\' yield', async () => {
+  it('one yield draft per day the savings yield comes in (from the start on), with the share of Prumo that day', async () => {
     const tx = {
       [PW]: [
-        t(PW, '2026-11-10', 0.01, 'Rendimentos'),
-        t(PW, '2026-11-10', 0.09, 'Rendimentos'), // 10 cents that day: 10 % is Prumo's -> 1 cent
-        t(PW, '2026-12-01', 5, 'Rendimentos'), // current month: not yet
+        t(PW, '2026-11-26', 0.5, 'Rendimentos'), // before the start: no draft
+        t(PW, '2026-11-30', 0.01, 'Rendimentos'),
+        t(PW, '2026-11-30', 0.09, 'Rendimentos'), // 10 cents that day: 10 % is Prumo's -> 1 cent
+        t(PW, '2026-12-01', 5, 'Rendimentos'), // 500 cents -> 50 cents, today's month too
       ],
     };
     const savings = [
       { name: 'Cofrinho Azul', aliases: [], inPrumo: true, approxBalance: '100.00', balanceAsOf: new Date('2026-11-01T00:00:00Z') },
       { name: 'Cofrinho Pai', aliases: [], inPrumo: false, approxBalance: '900.00', balanceAsOf: new Date('2026-11-01T00:00:00Z') },
     ];
-    const { db, state } = fakeDb({ importFrom: '2026-10-15', savings });
+    const { db, state } = fakeDb({ importFrom: '2026-11-27', savings });
 
     const result = await importOpenFinance({ householdId: HH, db, client: fakeClient(tx), now: NOW });
 
-    expect(result.yieldDrafts).toBe(1);
-    expect(state.captures).toEqual([
-      expect.objectContaining({
-        text: 'Rendimentos dos cofrinhos em 11/2026',
-        postedAt: new Date('2026-11-30T15:00:00.000Z'),
-        parsed: expect.objectContaining({ kind: 'PIX_IN', type: 'INCOME', amountCents: 1, accountId: ACC_W, source: 'open-finance' }),
-      }),
+    expect(result.yieldDrafts).toBe(2);
+    expect(state.captures.map((c) => [c.text, c.postedAt, c.parsed.amountCents, c.parsed.type, c.parsed.accountId])).toEqual([
+      ['Rendimento dos cofrinhos em 30/11/2026', new Date('2026-11-30T15:00:00.000Z'), 1, 'INCOME', ACC_W],
+      ['Rendimento dos cofrinhos em 01/12/2026', new Date('2026-12-01T15:00:00.000Z'), 50, 'INCOME', ACC_W],
     ]);
+    expect(new Set(state.captures.map((c) => c.dedupKey)).size).toBe(2);
   });
 
-  it('no yield draft for the month the import started in, nor when Prumo\'s share is unknown', async () => {
-    const tx = { [PW]: [t(PW, '2026-11-10', 10, 'Rendimentos')] };
-    const started = fakeDb({ importFrom: '2026-11-27', savings: [] });
-    expect((await importOpenFinance({ householdId: HH, db: started.db, client: fakeClient(tx), now: NOW })).yieldDrafts).toBe(0);
-    const unknown = fakeDb({ importFrom: '2026-10-15', savings: [] });
+  it('no yield draft when the share of Prumo is unknown, or rounds to zero', async () => {
+    const tx = { [PW]: [t(PW, '2026-12-01', 10, 'Rendimentos')] };
+    const unknown = fakeDb({ importFrom: '2026-11-27', savings: [] });
     expect((await importOpenFinance({ householdId: HH, db: unknown.db, client: fakeClient(tx), now: NOW })).yieldDrafts).toBe(0);
+    const tiny = { [PW]: [t(PW, '2026-12-01', 0.04, 'Rendimentos')] }; // 10 % of 4 cents -> 0
+    const savings = [
+      { name: 'Cofrinho Azul', aliases: [], inPrumo: true, approxBalance: '100.00', balanceAsOf: new Date('2026-11-01T00:00:00Z') },
+      { name: 'Cofrinho Pai', aliases: [], inPrumo: false, approxBalance: '900.00', balanceAsOf: new Date('2026-11-01T00:00:00Z') },
+    ];
+    const zero = fakeDb({ importFrom: '2026-11-27', savings });
+    expect((await importOpenFinance({ householdId: HH, db: zero.db, client: fakeClient(tiny), now: NOW })).yieldDrafts).toBe(0);
   });
 
   it('a line already waiting in the box as a notification (same kind and value, same or next day) is not drafted again', async () => {
