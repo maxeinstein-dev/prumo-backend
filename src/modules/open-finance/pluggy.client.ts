@@ -97,7 +97,32 @@ export interface PluggyInvestment {
   status: string | null;
 }
 
+export interface PluggyBill {
+  id: string;
+  /** 'YYYY-MM-DD' */
+  dueDate: string;
+  /** 'YYYY-MM-DD', when the bank sends it. */
+  closingDate: string | null;
+  /** Reais. */
+  totalAmount: number;
+}
+
+export interface PluggyCard {
+  id: string;
+  /** Reais, as Pluggy sends it (its meaning for cards is not documented: compared only as information). */
+  balance: number | null;
+  closeDate: string | null;
+  dueDate: string | null;
+  creditLimit: number | null;
+  availableCreditLimit: number | null;
+  minimumPayment: number | null;
+}
+
 export interface PluggyClient {
+  /** GET /bills?accountId=: the closed bills of a card account (Open Finance connections). */
+  listBills(accountId: string): Promise<PluggyBill[]>;
+  /** GET /accounts?itemId=&type=CREDIT: the card accounts of an item with their credit data. */
+  listCards(itemId: string): Promise<PluggyCard[]>;
   /** GET /investments?itemId=: the investments of a connection (a broker's portfolio). */
   listInvestments(itemId: string): Promise<PluggyInvestment[]>;
   /** GET /items/:id: the status of a connection (an expired authorization reads as empty lists, not as an error). */
@@ -169,6 +194,29 @@ function toInvestment(raw: Json): PluggyInvestment {
     date: dayOf(raw.date),
     dueDate: dayOf(raw.dueDate),
     status: str(raw.status),
+  };
+}
+
+function toBill(raw: Json): PluggyBill {
+  const id = str(raw.id);
+  const dueDate = dayOf(raw.dueDate);
+  const totalAmount = num(raw.totalAmount);
+  if (!id || !dueDate || totalAmount === null) throw new PluggyError('invalid_response');
+  return { id, dueDate, closingDate: dayOf(raw.billClosingDate), totalAmount };
+}
+
+function toCard(raw: Json): PluggyCard {
+  const id = str(raw.id);
+  if (!id) throw new PluggyError('invalid_response');
+  const credit = (raw.creditData ?? {}) as Json;
+  return {
+    id,
+    balance: num(raw.balance),
+    closeDate: dayOf(credit.balanceCloseDate),
+    dueDate: dayOf(credit.balanceDueDate),
+    creditLimit: num(credit.creditLimit),
+    availableCreditLimit: num(credit.availableCreditLimit),
+    minimumPayment: num(credit.minimumPayment),
   };
 }
 
@@ -284,6 +332,23 @@ export function createPluggyClient(options: PluggyOptions): PluggyClient {
         consentExpiresAt: str(body?.consentExpiresAt),
         connectorName: str((body?.connector as Json | undefined)?.name),
       };
+    },
+
+    async listBills(accountId) {
+      const bills: PluggyBill[] = [];
+      for (let page = 1; page <= maxPages; page++) {
+        const query = new URLSearchParams({ accountId, page: String(page), pageSize: '500' });
+        const body = await get(`/bills?${query}`);
+        bills.push(...results(body).map(toBill));
+        const totalPages = num((body as Json).totalPages) ?? 1;
+        if (page >= totalPages) return bills;
+      }
+      throw new PluggyError('invalid_response');
+    },
+
+    async listCards(itemId) {
+      const query = new URLSearchParams({ itemId, type: 'CREDIT', page: '1', pageSize: '500' });
+      return results(await get(`/accounts?${query}`)).map(toCard);
     },
 
     async listInvestments(itemId) {
