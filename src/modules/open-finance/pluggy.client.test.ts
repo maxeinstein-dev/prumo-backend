@@ -277,6 +277,42 @@ describe('createPluggyClient', () => {
     ]);
   });
 
+  it('listBills reads every page of GET /bills?accountId= (due day, closing day, total)', async () => {
+    const { fn, calls } = fakeFetch((call) => {
+      if (authOk(call)) return authOk(call)!;
+      const page = new URL(call.url).searchParams.get('page');
+      return page === '1'
+        ? json(200, { page: 1, total: 2, totalPages: 2, results: [{ id: 'b-1', dueDate: '2026-11-08T00:00:00.000Z', billClosingDate: '2026-11-01T00:00:00.000Z', totalAmount: 1234.56, totalAmountCurrencyCode: 'BRL', minimumPaymentAmount: 300 }] })
+        : json(200, { page: 2, total: 2, totalPages: 2, results: [{ id: 'b-2', dueDate: '2026-10-08T00:00:00.000Z', billClosingDate: null, totalAmount: 98.7 }] });
+    });
+    const client = createPluggyClient({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, fetch: fn });
+
+    const bills = await client.listBills(ACC);
+
+    expect(new URL(calls[1].url).pathname).toBe('/bills');
+    expect(new URL(calls[1].url).searchParams.get('accountId')).toBe(ACC);
+    expect(bills).toEqual([
+      { id: 'b-1', dueDate: '2026-11-08', closingDate: '2026-11-01', totalAmount: 1234.56 },
+      { id: 'b-2', dueDate: '2026-10-08', closingDate: null, totalAmount: 98.7 },
+    ]);
+  });
+
+  it('listCards reads the credit data of the card accounts of an item', async () => {
+    const { fn, calls } = fakeFetch((call) => {
+      if (authOk(call)) return authOk(call)!;
+      return json(200, {
+        page: 1, total: 1, totalPages: 1,
+        results: [account(ACC, { type: 'CREDIT', subtype: 'CREDIT_CARD', balance: 1234.5, creditData: { balanceCloseDate: '2026-12-01T00:00:00.000Z', balanceDueDate: '2026-12-08T00:00:00.000Z', creditLimit: 5000, availableCreditLimit: 3765.5, minimumPayment: 200 } })],
+      });
+    });
+    const client = createPluggyClient({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, fetch: fn });
+
+    const cards = await client.listCards(ITEM);
+
+    expect(new URL(calls[1].url).searchParams.get('type')).toBe('CREDIT');
+    expect(cards).toEqual([{ id: ACC, balance: 1234.5, closeDate: '2026-12-01', dueDate: '2026-12-08', creditLimit: 5000, availableCreditLimit: 3765.5, minimumPayment: 200 }]);
+  });
+
   it('a network failure fails as network', async () => {
     const fn = vi.fn(async () => {
       throw new TypeError('fetch failed');

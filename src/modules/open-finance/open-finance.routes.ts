@@ -7,6 +7,8 @@ import { authMiddleware } from '../../shared/middleware/auth.middleware.js';
 import { ensurePersonalHousehold, requireEditor, requireHouseholdMember } from '../../shared/middleware/authorization.middleware.js';
 import { balanceChecks, type BalancesDb } from './open-finance.balances.js';
 import { checkOpenFinance, type CheckDb } from './open-finance.check.js';
+import { checkCards, type CardsDb } from './open-finance.cards.js';
+import { calculateCreditCardInvoice } from '../transactions/credit-card-invoice.service.js';
 import { checkInvestments, type InvestmentsDb, type PrumoPortfolio } from './open-finance.investments.js';
 import { listPositions, loadAccount } from '../investments/investments.service.js';
 import { ForbiddenError } from '../../shared/errors/app-error.js';
@@ -331,5 +333,30 @@ export async function openFinanceRoutes(app: FastifyInstance) {
       checkInvestments({ householdId, db: prisma as unknown as InvestmentsDb, client: clientFromEnv(), loadPortfolio }),
     );
     return reply.send({ success: true, data: { accounts } });
+  });
+
+  /**
+   * GET /open-finance/cards : the bills of each linked card at the bank against the Prumo invoice with the same due day,
+   * and the card's balance and limit beside Prumo's (P25, decision 3: only checks; the OFX keeps creating purchases).
+   */
+  app.get('/cards', {
+    schema: {
+      description: 'Compare the card bills from Open Finance with the Prumo invoices of the same due day (statement total), and show the card balance and limit beside Prumo. Reads only',
+      tags: ['Open Finance'],
+      security: [{ bearerAuth: [] }],
+      response: objectResponse,
+    },
+  }, async (request, reply) => {
+    const query = householdQuerySchema.parse(request.query);
+    const householdId = query.householdId ?? await ensurePersonalHousehold(request);
+    await requireHouseholdMember(request, householdId);
+    const loadInvoice = async (accountId: string, month: string) => {
+      const { data: invoice } = await calculateCreditCardInvoice(accountId, month, householdId, { limit: 1 });
+      return { dueDate: invoice.dueDate ?? invoice.closingDate, statementTotal: invoice.statementTotal, state: invoice.state };
+    };
+    const cards = await withPluggyErrors(() =>
+      checkCards({ householdId, db: prisma as unknown as CardsDb, client: clientFromEnv(), loadInvoice }),
+    );
+    return reply.send({ success: true, data: { cards } });
   });
 }

@@ -89,7 +89,9 @@ describe('checkInvestments', () => {
       getItem: async (id: string) => ({ id, status: 'UPDATED', executionStatus: 'SUCCESS', consentExpiresAt: null, connectorName: null }),
       listAccounts: async () => [{ id: 'pa-x', itemId: 'item-x', type: 'BANK', subtype: null, name: 'Conta', marketingName: null, number: '0', balance: 9.66, currencyCode: 'BRL' }],
       listInvestments: async () => [inv({ code: 'AAAA11', quantity: 10, balance: 1000 })],
-      listTransactions: async () => [],
+      listBills: async () => [],
+    listCards: async () => [],
+    listTransactions: async () => [],
       checkCredentials: async () => 'ok' as const,
     };
     const loaded: string[] = [];
@@ -125,6 +127,8 @@ describe('checkInvestments', () => {
       getItem: async (id: string) => ({ id, status: 'LOGIN_ERROR', executionStatus: 'USER_AUTHORIZATION_EXPIRED', consentExpiresAt: null, connectorName: null }),
       listAccounts: async () => { throw new Error('should not read'); },
       listInvestments: async () => { throw new Error('should not read'); },
+      listBills: async () => [],
+      listCards: async () => [],
       listTransactions: async () => [],
       checkCredentials: async () => 'ok' as const,
     };
