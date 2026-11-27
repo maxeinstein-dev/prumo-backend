@@ -182,7 +182,7 @@ export async function updateBalanceForNormalTransaction(
 
 /**
  * Apply a transfer between accounts
- * Updates available_balance only (not total_balance)
+ * Moves total_balance and available_balance of both accounts (allocated_balance stays).
  */
 export async function applyTransfer(
   tx: Prisma.TransactionClient,
@@ -222,18 +222,19 @@ export async function applyTransfer(
     }
   }
 
-  // Apply transfer: debit from source, credit to destination
-  // Only available_balance changes (not total_balance)
-  // totalBalanceChange must be 0 for transfers (doesn't affect patrimony)
+  // Apply transfer: debit from source, credit to destination, in total_balance AND available_balance.
+  // The household's patrimony does not change (one account loses what the other gets), but each account's does:
+  // with totalBalanceChange 0 the total stayed stale (total != available + allocated) until a later income/expense
+  // recomputed it, so an account with an expense and then a transfer in kept the expense in its total.
   await updateAccountBalances(tx, [
     {
       accountId: fromAccountId,
-      totalBalanceChange: 0, // Explicitly set to 0 - transfers don't change total balance
+      totalBalanceChange: -amount,
       availableBalanceChange: -amount,
     },
     {
       accountId: toAccountId,
-      totalBalanceChange: 0, // Explicitly set to 0 - transfers don't change total balance
+      totalBalanceChange: amount,
       availableBalanceChange: amount,
     },
   ]);
