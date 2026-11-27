@@ -7,37 +7,15 @@
  * Cards are not checked (their purchases come from the invoice OFX, decision 3). An item whose authorization expired
  * (Pluggy answers its lists empty) is reported as blocked and not read: empty is not "no movement".
  */
-import { classifyAccount, matchWithPrumo, pairOwnTransfers, type BankLine, type PrumoTx } from './open-finance.classify.js';
-import { MATCH_DAYS } from './open-finance.classify.js';
-import { PluggyError, type PluggyClient } from './pluggy.client.js';
-import { ignoredSavingsNames, splitYields } from './open-finance.savings.js';
-import { listSavings } from './open-finance.savings.service.js';
+import { analyzeOpenFinance, ymd, type AnalyzeDb } from './open-finance.analyze.js';
+import type { BankLine } from './open-finance.classify.js';
+import { splitYields } from './open-finance.savings.js';
+import type { PluggyClient } from './pluggy.client.js';
 
 export const CHECK_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export interface CheckDb {
-  openFinanceLink: {
-    findMany(args: unknown): Promise<Array<{ pluggyItemId: string; pluggyAccountId: string | null; accountId: string | null }>>;
-  };
-  account: { findMany(args: unknown): Promise<Array<{ id: string; type: string }>> };
-  openFinanceSavings: { findMany(args: unknown): Promise<Array<{ name: string; aliases: string[]; inPrumo: boolean; approxBalance: unknown; balanceAsOf: Date | null }>> };
-  transaction: {
-    findMany(args: unknown): Promise<
-      Array<{
-        id: string;
-        type: string;
-        accountId: string | null;
-        fromAccountId: string | null;
-        toAccountId: string | null;
-        amount: unknown;
-        date: Date;
-        description: string | null;
-        paid: boolean;
-      }>
-    >;
-  };
-}
+export type CheckDb = AnalyzeDb;
 
 type LineView = Pick<BankLine, 'id' | 'date' | 'cents' | 'description' | 'savingsName'>;
 
@@ -75,18 +53,7 @@ export interface CheckReport {
   investmentsNotChecked: number;
 }
 
-const ymd = (date: Date): string => date.toISOString().slice(0, 10);
 const view = (l: BankLine): LineView => ({ id: l.id, date: l.date, cents: l.cents, description: l.description, savingsName: l.savingsName });
-
-function blockedText(status: string, executionStatus: string | null): string | null {
-  if (executionStatus === 'USER_AUTHORIZATION_EXPIRED' || status === 'LOGIN_ERROR') {
-    return 'A autorização deste banco venceu: reconecte no Meu Pluggy.';
-  }
-  if (status === 'WAITING_USER_INPUT') return 'O banco espera uma ação no Meu Pluggy antes de atualizar.';
-  return null;
-}
-
-const isFatal = (e: unknown) => e instanceof PluggyError && (e.kind === 'auth' || e.kind === 'not_configured');
 
 export async function checkOpenFinance(input: {
   householdId: string;
@@ -96,92 +63,14 @@ export async function checkOpenFinance(input: {
   ignoredSavings: readonly string[];
 }): Promise<CheckReport> {
   const now = input.now ?? new Date();
-  const from = ymd(new Date(now.getTime() - CHECK_DAYS * DAY_MS));
-  const to = ymd(now);
-
-  const links = (
-    await input.db.openFinanceLink.findMany({
-      where: { householdId: input.householdId },
-      select: { pluggyItemId: true, pluggyAccountId: true, accountId: true },
-      orderBy: { createdAt: 'asc' },
-    })
-  ).filter((l): l is { pluggyItemId: string; pluggyAccountId: string; accountId: string } => !!l.pluggyAccountId && !!l.accountId);
-
-  const savings = await listSavings(input.db, input.householdId);
-  const ignoredSavings = [...ignoredSavingsNames(savings), ...input.ignoredSavings];
-
-  const items: CheckReport['items'] = [];
-  const lines: BankLine[] = [];
-  let cardsNotChecked = 0;
-  let investmentsNotChecked = 0;
-  const prumoTypes = new Map(
-    (links.length
-      ? await input.db.account.findMany({
-          where: { id: { in: [...new Set(links.map((l) => l.accountId))] }, householdId: input.householdId },
-          select: { id: true, type: true },
-        })
-      : []
-    ).map((a) => [a.id, a.type]),
-  );
-
-  for (const itemId of [...new Set(links.map((l) => l.pluggyItemId))]) {
-    let accounts;
-    try {
-      const item = await input.client.getItem(itemId);
-      const blocked = blockedText(item.status, item.executionStatus);
-      items.push({ itemId, status: item.status, blocked });
-      if (blocked) continue;
-      accounts = await input.client.listAccounts(itemId);
-    } catch (e) {
-      if (isFatal(e) || !(e instanceof PluggyError)) throw e;
-      items.push({ itemId, status: null, blocked: e.message });
-      continue;
-    }
-    for (const link of links.filter((l) => l.pluggyItemId === itemId)) {
-      const account = accounts.find((a) => a.id === link.pluggyAccountId);
-      if (!account) continue;
-      if (account.type === 'CREDIT') {
-        cardsNotChecked++;
-        continue;
-      }
-      if (prumoTypes.get(link.accountId) === 'INVESTMENT') {
-        investmentsNotChecked++;
-        continue;
-      }
-      const transactions = await input.client.listTransactions(account.id, { from, to });
-      lines.push(...classifyAccount(transactions, { prumoAccountId: link.accountId, ignoredSavings }));
-    }
-  }
-
-  const prumoAccounts = [...new Set(lines.map((l) => l.prumoAccountId))];
-  if (prumoAccounts.length === 0) {
-    return { from, to, items, accounts: [], transfers: { matched: 0, missing: [] }, savingsNames: [], cardsNotChecked, investmentsNotChecked };
-  }
-
-  const margin = MATCH_DAYS * DAY_MS;
-  const rows = await input.db.transaction.findMany({
-    where: {
-      householdId: input.householdId,
-      date: { gte: new Date(`${ymd(new Date(Date.parse(`${from}T00:00:00Z`) - margin))}T00:00:00Z`), lte: new Date(`${ymd(new Date(Date.parse(`${to}T00:00:00Z`) + margin))}T00:00:00Z`) },
-      OR: [{ accountId: { in: prumoAccounts } }, { fromAccountId: { in: prumoAccounts } }, { toAccountId: { in: prumoAccounts } }],
-    },
-    select: { id: true, type: true, accountId: true, fromAccountId: true, toAccountId: true, amount: true, date: true, description: true, paid: true },
+  const { from, to, links, items, lines, savings, result, cardsNotChecked, investmentsNotChecked } = await analyzeOpenFinance({
+    householdId: input.householdId,
+    db: input.db,
+    client: input.client,
+    from: ymd(new Date(now.getTime() - CHECK_DAYS * DAY_MS)),
+    to: ymd(now),
+    ignoredSavings: input.ignoredSavings,
   });
-  const prumo: PrumoTx[] = rows.map((r) => ({
-    id: r.id,
-    type: r.type as PrumoTx['type'],
-    accountId: r.accountId,
-    fromAccountId: r.fromAccountId,
-    toAccountId: r.toAccountId,
-    cents: Math.abs(Math.round(Number(r.amount) * 100)),
-    date: ymd(r.date),
-    description: r.description,
-    paid: r.paid,
-  }));
-
-  const { transfers, rest } = pairOwnTransfers(lines);
-  const candidates = rest.filter((l) => l.kind === 'candidate');
-  const result = matchWithPrumo({ lines: candidates, passthrough: rest.filter((l) => l.kind === 'passthrough'), transfers, prumo, from, to });
 
   const accounts: AccountCheck[] = links
     .filter((l) => lines.some((line) => line.pluggyAccountId === l.pluggyAccountId))

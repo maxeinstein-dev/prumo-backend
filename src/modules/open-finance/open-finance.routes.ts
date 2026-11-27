@@ -6,6 +6,7 @@ import { AppError } from '../../shared/errors/app-error.js';
 import { authMiddleware } from '../../shared/middleware/auth.middleware.js';
 import { ensurePersonalHousehold, requireEditor, requireHouseholdMember } from '../../shared/middleware/authorization.middleware.js';
 import { checkOpenFinance, type CheckDb } from './open-finance.check.js';
+import { importOpenFinance, type ImportDb } from './open-finance.import.js';
 import { listSavings, replaceSavings, type SavingsDb } from './open-finance.savings.service.js';
 import { addItem, listLinks, removeItem, replaceAccountLinks, replaceItem, type LinksDb } from './open-finance.links.js';
 import { previewOpenFinance, type PreviewDb } from './open-finance.preview.js';
@@ -256,5 +257,26 @@ export async function openFinanceRoutes(app: FastifyInstance) {
     await requireEditor(request, householdId);
     await replaceSavings(prisma as unknown as SavingsDb, householdId, body.savings);
     return reply.send({ success: true, data: { savings: await listSavings(prisma as unknown as SavingsDb, householdId) } });
+  });
+
+  /**
+   * POST /open-finance/import (EDITOR+): references what Prumo already has, drafts what is missing (from the day the
+   * import started for each account), transfer drafts between own accounts and the monthly yield draft. Idempotent.
+   */
+  app.post('/import', {
+    schema: {
+      description: 'Import the linked bank accounts: references for what Prumo has, drafts in the captures box for what is missing (from the first run on), transfer drafts and the monthly savings yield draft. Safe to run again',
+      tags: ['Open Finance'],
+      security: [{ bearerAuth: [] }],
+      response: objectResponse,
+    },
+  }, async (request, reply) => {
+    const query = householdQuerySchema.parse(request.query);
+    const householdId = query.householdId ?? await ensurePersonalHousehold(request);
+    await requireEditor(request, householdId);
+    const data = await withPluggyErrors(() =>
+      importOpenFinance({ householdId, db: prisma as unknown as ImportDb, client: clientFromEnv() }),
+    );
+    return reply.send({ success: true, data });
   });
 }
