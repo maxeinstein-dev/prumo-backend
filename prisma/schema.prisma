@@ -1317,6 +1317,8 @@ model OpenFinanceLink {
   accountId       String?   @map("account_id") @db.Uuid
   lastSyncAt      DateTime? @map("last_sync_at") @db.Timestamptz(3)
   lastError       String?   @map("last_error") @db.VarChar(500)
+  // P25 L2b2: day the import started for this account; drafts only for lines from this day on (set on the first run).
+  importFrom      DateTime? @map("import_from") @db.Date
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 

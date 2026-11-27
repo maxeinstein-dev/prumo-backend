@@ -8,7 +8,7 @@ import type { CreateTransactionInput } from '../transactions/transactions.schema
 import { checkNewTransactionSplit, writeNewTransactionSharesInTx } from '../people/shares.service.js';
 import { buildCategoryHints, type CategoryHints } from './capture-category.js';
 import { buildSuggestion, suggestedPlace, type SuggestionCardRule, type SuggestionRule } from './capture-suggestion.js';
-import { PARSER_VERSION, parseCapture, type ParsedCapture } from './parsers/index.js';
+import { PARSED_PACKAGES, PARSER_VERSION, parseCapture, type ParsedCapture } from './parsers/index.js';
 import { isAllowedGmailSender } from './parsers/gmail.js';
 import { DUPLICATE_WINDOW_MS, GMAIL_PACKAGE, duplicatesToDismiss, isAppOutflow, isEmailOutflow } from './capture-duplicates.js';
 import type { AccountRuleInput, CaptureItemInput, CaptureStatusValue, CardRuleInput, ConfirmCaptureInput, ConfirmTransferInput } from './captures.schema.js';
@@ -747,7 +747,8 @@ export interface ReparseResult {
  */
 export async function reparseCaptures(householdId: string): Promise<ReparseResult> {
   const rows = await prisma.capturedNotification.findMany({
-    where: { householdId, status: { in: REPARSABLE_STATUSES }, OR: READ_BY_OLDER_PARSER },
+    // Only packages with a reader: a draft that carries its own reading (Open Finance) would lose it.
+    where: { householdId, status: { in: REPARSABLE_STATUSES }, package: { in: [...PARSED_PACKAGES] }, OR: READ_BY_OLDER_PARSER },
     select: { id: true, package: true, title: true, text: true, status: true, dedupKey: true, postedAt: true },
     orderBy: CAPTURE_ORDER,
     take: REPARSE_LIMIT,
