@@ -48,6 +48,8 @@ function fakeClient(tx: Record<string, PluggyTransaction[]>, blocked: string[] =
     })),
     listAccounts: vi.fn(async (id: string) => (id === ITEM_W ? [acc(PW, ITEM_W)] : [acc(PB, ITEM_B)])),
     listInvestments: vi.fn(async () => []),
+    listBills: vi.fn(async () => []),
+    listCards: vi.fn(async () => []),
     listTransactions: vi.fn(async (accountId: string) => tx[accountId] ?? []),
   };
 }
