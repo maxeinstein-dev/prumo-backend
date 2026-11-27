@@ -10,6 +10,8 @@
 import { classifyAccount, matchWithPrumo, pairOwnTransfers, type BankLine, type PrumoTx } from './open-finance.classify.js';
 import { MATCH_DAYS } from './open-finance.classify.js';
 import { PluggyError, type PluggyClient } from './pluggy.client.js';
+import { ignoredSavingsNames, splitYields } from './open-finance.savings.js';
+import { listSavings } from './open-finance.savings.service.js';
 
 export const CHECK_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -19,6 +21,7 @@ export interface CheckDb {
     findMany(args: unknown): Promise<Array<{ pluggyItemId: string; pluggyAccountId: string | null; accountId: string | null }>>;
   };
   account: { findMany(args: unknown): Promise<Array<{ id: string; type: string }>> };
+  openFinanceSavings: { findMany(args: unknown): Promise<Array<{ name: string; aliases: string[]; inPrumo: boolean; approxBalance: unknown; balanceAsOf: Date | null }>> };
   transaction: {
     findMany(args: unknown): Promise<
       Array<{
@@ -42,8 +45,8 @@ export interface AccountCheck {
   pluggyAccountId: string;
   prumoAccountId: string;
   counts: { yield: number; savings: number; outside: number; passthrough: number; matched: number; missing: number };
-  /** The savings' yield summed per month (the import makes one draft per month). */
-  yieldsByMonth: Array<{ month: string; cents: number }>;
+  /** The savings' yield summed per month, and Prumo's share of it (null = a savings has no registered balance). */
+  yieldsByMonth: Array<{ month: string; cents: number; prumoCents: number | null }>;
   missing: LineView[];
   outside: LineView[];
   onlyInPrumo: Array<{ id: string; type: string; date: string; cents: number; description: string | null; paid: boolean }>;
@@ -104,6 +107,9 @@ export async function checkOpenFinance(input: {
     })
   ).filter((l): l is { pluggyItemId: string; pluggyAccountId: string; accountId: string } => !!l.pluggyAccountId && !!l.accountId);
 
+  const savings = await listSavings(input.db, input.householdId);
+  const ignoredSavings = [...ignoredSavingsNames(savings), ...input.ignoredSavings];
+
   const items: CheckReport['items'] = [];
   const lines: BankLine[] = [];
   let cardsNotChecked = 0;
@@ -143,7 +149,7 @@ export async function checkOpenFinance(input: {
         continue;
       }
       const transactions = await input.client.listTransactions(account.id, { from, to });
-      lines.push(...classifyAccount(transactions, { prumoAccountId: link.accountId, ignoredSavings: input.ignoredSavings }));
+      lines.push(...classifyAccount(transactions, { prumoAccountId: link.accountId, ignoredSavings }));
     }
   }
 
@@ -193,7 +199,7 @@ export async function checkOpenFinance(input: {
           matched: result.matched.filter((m) => own(m.line)).length,
           missing: result.missing.filter(own).length,
         },
-        yieldsByMonth: yieldsByMonth(mine),
+        yieldsByMonth: splitYields(mine, savings),
         missing: result.missing.filter(own).map(view),
         outside: mine.filter((x) => x.kind === 'outside').map(view),
         onlyInPrumo: result.onlyInPrumo
@@ -222,14 +228,4 @@ export async function checkOpenFinance(input: {
     cardsNotChecked,
     investmentsNotChecked,
   };
-}
-
-function yieldsByMonth(lines: readonly BankLine[]): Array<{ month: string; cents: number }> {
-  const sums = new Map<string, number>();
-  for (const line of lines) {
-    if (line.kind !== 'yield') continue;
-    const month = line.date.slice(0, 7);
-    sums.set(month, (sums.get(month) ?? 0) + line.cents);
-  }
-  return [...sums].sort(([a], [b]) => a.localeCompare(b)).map(([month, cents]) => ({ month, cents }));
 }
